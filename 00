@@ -209,6 +209,8 @@ namespace SC_StepByStep_v1
         // 데이터 송신 (마스터 -> 보조 or 보조 -> 마스터)
         private void SendCommand(string command)
         {
+            FlashStatusLabel();
+
             if (_stream != null && _client != null && _client.Connected)
             {
                 try
@@ -251,45 +253,46 @@ namespace SC_StepByStep_v1
             FlashStatusLabel();
 
             if (string.IsNullOrEmpty(msg)) return;
-            UpdateLog($"[Recv] {msg}");
+            UpdateLog($"[Recv] {msg}"); // 로그 확인용
 
-            // 파이프(|) 기준으로 명령과 데이터를 나눕니다.
             string[] parts = msg.Split('|');
-            if (parts.Length < 2) return;
+            string cmd = parts[0]; // 명령어 확인 (MOVE, KD, KU 등)
 
-            string commandName = parts[0];
-
-            // 1. 마우스 이동 실행
-            if (commandName == "MOVE" && parts.Length == 3)
+            // 1. 마우스 이동 신호 처리 (이 부분이 빠져 있었습니다!)
+            if (cmd == "MOVE" && parts.Length == 3)
             {
-                int dx = int.Parse(parts[1]);
-                int dy = int.Parse(parts[2]);
+                // 전송된 목표 좌표 파싱
+                int targetX = int.Parse(parts[1]);
+                int targetY = int.Parse(parts[2]);
 
-                // 이전 코드 방식: 상대 이동(0x0001)
-                // 현재 위치와 목표 위치의 차이를 계산하여 이동
                 this.Invoke((MethodInvoker)delegate {
-                    int moveX = dx - Cursor.Position.X;
-                    int moveY = dy - Cursor.Position.Y;
+                    // [중요] 현재 위치와 목표 위치의 차이(Delta)를 계산하여 이동
+                    // 0x0001 플래그는 '상대적 이동'을 의미하므로 차이값을 넣어야 합니다.
+                    int dx = targetX - Cursor.Position.X;
+                    int dy = targetY - Cursor.Position.Y;
 
-                    if (moveX != 0 || moveY != 0)
+                    // 변화가 있을 때만 이동 신호 발생
+                    if (dx != 0 || dy != 0)
                     {
-                        mouse_event(0x0001, moveX, moveY, 0, 0);
+                        mouse_event(0x0001, dx, dy, 0, 0);
                     }
                 });
             }
-            // 2. 키보드 누름 (KD)
-            else if (commandName == "KD" && parts.Length == 2)
+            // 2. 키보드 누름 (Key Down)
+            else if (cmd == "KD" && parts.Length == 2)
             {
-                uint vk = (uint)int.Parse(parts[1]);
-                uint scanCode = MapVirtualKey(vk, 0);
-                SendKeyScan(scanCode, 0, true); // Key Down
+                int vk = int.Parse(parts[1]);
+                // 윈도우 가상키 -> 스캔코드 변환 (게임 호환성 위함)
+                uint scanCode = MapVirtualKey((uint)vk, 0);
+                // dwFlags: 0(누름), 2(뗌) | 8(스캔코드 모드)
+                keybd_event(0, (byte)scanCode, 0x0008, 0);
             }
-            // 3. 키보드 뗌 (KU)
-            else if (commandName == "KU" && parts.Length == 2)
+            // 3. 키보드 뗌 (Key Up)
+            else if (cmd == "KU" && parts.Length == 2)
             {
-                uint vk = (uint)int.Parse(parts[1]);
-                uint scanCode = MapVirtualKey(vk, 0);
-                SendKeyScan(scanCode, 0, false); // Key Up
+                int vk = int.Parse(parts[1]);
+                uint scanCode = MapVirtualKey((uint)vk, 0);
+                keybd_event(0, (byte)scanCode, 0x0008 | 0x0002, 0);
             }
 
             // 2. 기존 자동화 신호 처리 (SUB_ACTION_1, 2 등)
@@ -980,60 +983,7 @@ namespace SC_StepByStep_v1
             return double.TryParse(txt.Text, out double result) ? result : defaultValue;
         }
 
-        // 마우스 전역 훅에서 호출되는 부분
-        // 1. 마우스 이동 (배율 적용)
-        private void OnMouseMove(int x, int y)
-        {
-            // 로그를 먼저 찍어서 함수가 호출되는지 확인
-            // UpdateLog($"Hook: {x}, {y}"); 
-
-            if (!_isSyncEnabled || !_isConnected || !_isMasterRole) return;
-
-            double rx = GetDouble(txtRatioX, 1.0);
-            double ry = GetDouble(txtRatioY, 1.0);
-
-            int tx = (int)(x * rx);
-            int ty = (int)(y * ry);
-
-            if (Math.Abs(_lastSentPos.X - tx) > 2 || Math.Abs(_lastSentPos.Y - ty) > 2)
-            {
-                SendCommand($"MOVE|{tx}|{ty}");
-                _lastSentPos = new Point(tx, ty);
-                // 전송 성공 시 로그 확인
-                UpdateLog($"[Send] MOVE|{tx}|{ty}");
-            }
-        }
-
-        // 2. 키보드 동기화 (WASD, Shift, F)
-        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
-        {
-            if (_isSyncEnabled && _isConnected && _isMasterRole)
-            {
-                Keys key = keyData & Keys.KeyCode;
-                if (key == Keys.W || key == Keys.A || key == Keys.S || key == Keys.D ||
-                    key == Keys.ShiftKey || key == Keys.F)
-                {
-                    // 메시지 타입에 따라 분기 (WM_KEYDOWN = 0x100, WM_KEYUP = 0x101)
-                    if (msg.Msg == 0x100) SendCommand($"KD|{(int)key}");
-                    else if (msg.Msg == 0x101) SendCommand($"KU|{(int)key}");
-                }
-            }
-            return base.ProcessCmdKey(ref msg, keyData);
-        }
-                public void SendKeyScan(uint scanCode, int delay, bool isDown)
-        {
-            if (isDown)
-            {
-                // 키 누름 신호 (dwFlags = 0x0008: 스캔코드 방식)
-                keybd_event(0, (byte)scanCode, 0x0008, 0);
-            }
-            else
-            {
-                // 키 뗌 신호 (dwFlags = 0x0008 | 0x0002)
-                keybd_event(0, (byte)scanCode, 0x0008 | 0x0002, 0);
-            }
-        }
-
+               
         private void btnSaveConfig_Click(object sender, EventArgs e) => SaveSettings();
 
         #endregion
