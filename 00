@@ -48,6 +48,7 @@ namespace SC_StepByStep_v1
 
         // --- C. 후킹 및 동기화 ---
         private IKeyboardMouseEvents _globalHook;
+        private Point _lastSentPos;
         private Point _lastPos;                 // 마우스 이전 위치 (델타 계산용)
         private int _deltaX, _deltaY;           // 전송할 마우스 이동량 누적
         private System.Windows.Forms.Timer _syncTimer; // 동기화 패킷 전송 타이머
@@ -240,6 +241,31 @@ namespace SC_StepByStep_v1
         // 수신된 메시지 처리
         private async void ProcessMessage(string msg)
         {
+            // 1. 마우스 동기화 신호 처리 (MOVE|X|Y)
+            if (msg.StartsWith("MOVE|"))
+            {
+                try
+                {
+                    string[] parts = msg.Split('|');
+                    if (parts.Length == 3)
+                    {
+                        int x = int.Parse(parts[1]);
+                        int y = int.Parse(parts[2]);
+
+                        // UI 스레드에서 커서 위치 변경 (Invoke 필요)
+                        this.Invoke((MethodInvoker)delegate {
+                            // 메인 PC의 절대 좌표를 서브 PC 커서에 대입
+                            Cursor.Position = new Point(x, y);
+                        });
+                    }
+                }
+                catch (Exception ex)
+                {
+                    UpdateLog($"❌ 좌표 파싱 에러: {ex.Message}");
+                }
+            }
+
+            // 2. 기존 자동화 신호 처리 (SUB_ACTION_1, 2 등)
             if (msg == "SUB_ACTION_1") // 첫 번째 클릭 신호
             {
                 UpdateLog("📡 1차 클릭 신호 수신");
@@ -920,6 +946,32 @@ namespace SC_StepByStep_v1
                 // 필요하다면 아주 미세한 클릭을 추가할 수도 있으나, 
                 // 움직임만으로도 대부분의 Anti-Kick은 방지됩니다.
             }
+        }
+
+        private double GetDouble(TextBox txt, double defaultValue)
+        {
+            return double.TryParse(txt.Text, out double result) ? result : defaultValue;
+        }
+
+        // 마우스 전역 훅에서 호출되는 부분
+        private void OnMouseMove(int x, int y)
+        {
+            // 1. 캐릭터 동기화 활성화 여부 확인 (chkSyncMove가 아닌 isSyncEnabled 사용)
+            if (!_isConnected || !_isSyncEnabled || !_isMasterRole) return;
+
+            // 2. 배율 조정 (txtRatioX, txtRatioY 활용)
+            double ratioX = GetDouble(txtRatioX, 1.0);
+            double ratioY = GetDouble(txtRatioY, 1.0);
+
+            int targetX = (int)(x * ratioX);
+            int targetY = (int)(y * ratioY);
+
+            // 3. 전송 부하 방지 (최소 2픽셀 이상 움직였을 때만 전송)
+            if (Math.Abs(_lastSentPos.X - targetX) < 2 && Math.Abs(_lastSentPos.Y - targetY) < 2) return;
+
+            // 4. 서브 PC로 "배율이 적용된 좌표" 전송
+            SendCommand($"MOVE|{targetX}|{targetY}");
+            _lastSentPos = new Point(targetX, targetY);
         }
 
         private void btnSaveConfig_Click(object sender, EventArgs e) => SaveSettings();
