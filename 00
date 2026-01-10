@@ -19,6 +19,7 @@ namespace SC_StepByStep_v1
         // 마우스 클릭 및 키보드 입력을 강제로 발생시키기 위한 Win32 API
         [DllImport("user32.dll")] static extern void mouse_event(uint dwFlags, int dx, int dy, uint dwData, uint dwExtraInfo);
         [DllImport("user32.dll")] static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, int dwExtraInfo);
+        [DllImport("user32.dll")] static extern uint MapVirtualKey(uint uCode, uint uMapType);
 
         // API 상수 (DirectX 게임 호환성을 위해 스캔코드 사용)
         const uint KEYEVENTF_SCANCODE = 0x0008;
@@ -241,6 +242,9 @@ namespace SC_StepByStep_v1
         // 수신된 메시지 처리
         private async void ProcessMessage(string msg)
         {
+            // 통신 테스트용 로그 (어떤 신호든 오면 로그에 찍힘)
+            UpdateLog($"[Recv] {msg}");
+
             // 1. 마우스 동기화 신호 처리 (MOVE|X|Y)
             if (msg.StartsWith("MOVE|"))
             {
@@ -972,6 +976,52 @@ namespace SC_StepByStep_v1
             // 4. 서브 PC로 "배율이 적용된 좌표" 전송
             SendCommand($"MOVE|{targetX}|{targetY}");
             _lastSentPos = new Point(targetX, targetY);
+        }
+
+        private void Form1_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (!_isSyncEnabled || !_isConnected) return;
+
+            // 동기화할 키 목록
+            if (e.KeyCode == Keys.W || e.KeyCode == Keys.A || e.KeyCode == Keys.S ||
+                e.KeyCode == Keys.D || e.KeyCode == Keys.ShiftKey || e.KeyCode == Keys.F)
+            {
+                SendCommand($"KEY_DOWN|{(int)e.KeyCode}");
+            }
+        }
+
+        private void Form1_KeyUp(object sender, KeyEventArgs e)
+        {
+            if (!_isSyncEnabled || !_isConnected) return;
+
+            if (e.KeyCode == Keys.W || e.KeyCode == Keys.A || e.KeyCode == Keys.S ||
+                e.KeyCode == Keys.D || e.KeyCode == Keys.ShiftKey || e.KeyCode == Keys.F)
+            {
+                SendCommand($"KEY_UP|{(int)e.KeyCode}");
+            }
+        }
+
+        private void HandleKeySync(string msg)
+        {
+            string[] parts = msg.Split('|');
+            if (parts.Length < 2) return;
+
+            int keyCode = int.Parse(parts[1]);
+            bool isDown = msg.StartsWith("KEY_DOWN");
+
+            // 윈도우 가상 키코드를 스캔코드로 변환 (게임 인식률을 위해)
+            uint scanCode = MapVirtualKey((uint)keyCode, 0);
+
+            if (isDown)
+            {
+                // 키 누름 (0x0008은 스캔코드 모드 전용 플래그일 수 있음, 환경에 따라 조정)
+                keybd_event((byte)keyCode, (byte)scanCode, 0, 0);
+            }
+            else
+            {
+                // 키 뗌
+                keybd_event((byte)keyCode, (byte)scanCode, 2, 0);
+            }
         }
 
         private void btnSaveConfig_Click(object sender, EventArgs e) => SaveSettings();
