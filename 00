@@ -55,7 +55,7 @@ namespace SC_StepByStep_v1
         private IKeyboardMouseEvents _globalHook;
         private Point _lastSentPos = new Point(0, 0); // 마지막 전송 좌표 저장
         private Point _lastPos;                 // 마우스 이전 위치 (델타 계산용)
-        private int _deltaX, _deltaY;           // 전송할 마우스 이동량 누적
+        private int _deltaX = 0, _deltaY = 0;          // 전송할 마우스 이동량 누적
         private System.Windows.Forms.Timer _syncTimer; // 동기화 패킷 전송 타이머
 
         // --- D. 매크로 및 설정 ---
@@ -92,6 +92,7 @@ namespace SC_StepByStep_v1
             _antiKickTimer.Interval = 300000; // 5분 주기
             _antiKickTimer.Tick += AntiKickTimer_Tick; // 이벤트 연결
             _antiKickTimer.Start(); // 타이머 가동 시작
+            InitPictureBoxEvents();
             UpdateLog("✅ 프로그램이 준비되었습니다. (v3.9.7).");
         }
         // 역할(마스터/보조)에 따라 UI 텍스트와 색상을 변경
@@ -119,6 +120,7 @@ namespace SC_StepByStep_v1
         {
             UpdateLog(chkAntiKick.Checked ? "🛡️ Anti-Kick 감시 시작 (5분 주기 Enter)" : "🔓 Anti-Kick 중단");
         }
+
         // [이벤트] 역할 전환 버튼 클릭
         private void btnToggleRole_Click(object sender, EventArgs e)
         {
@@ -293,8 +295,30 @@ namespace SC_StepByStep_v1
                 // 첫 번째 인자에 vk를 넣어주는 것이 더 안정적입니다.
                 keybd_event((byte)vk, (byte)scanCode, flags, 0);
             }
+            if (_isMasterRole)
+            {
+                // ==========================================
+                // [메인 PC] 서브 PC로부터의 응답 처리
+                // ==========================================
+                if (msg == "SUB_READY")
+                {
+                    _isSubReady = true;
+                    UpdateLog("✅ 서브 PC로부터 응답 수신 (다음 단계 진행 가능)");
+                }
+            }
 
-            // 2. 기존 자동화 신호 처리 (SUB_ACTION_1, 2 등)
+                // 2. 기존 자동화 신호 처리 (SUB_ACTION_1, 2 등)
+                // --- 상황 A: 서브 수동 모드 (사용자 클릭 대기) ---
+            else if (chkSubManual.Checked)
+            {
+                if (msg == "SUB_ACTION_1" || msg == "SUB_ACTION_2")
+                {
+                    UpdateLog($"📥 [수동 모드] 메인 신호({msg}) 수신. 화면을 직접 클릭하세요!");
+                    _waitingForUserClick = true;
+                    return; // 아래의 자동 실행 로직을 타지 않도록 종료
+                }
+            }
+            // --- 상황 B: 서브 자동 모드 (기존 매크로 실행) ---
             if (msg == "SUB_ACTION_1") // 첫 번째 클릭 신호
             {
                 UpdateLog("📡 1차 클릭 신호 수신");
@@ -385,7 +409,36 @@ namespace SC_StepByStep_v1
                 // B. 마스터 PC 이미지 캡처 (우클릭)
                 if (_isMasterRole && e.Button == MouseButtons.Right)
                 {
-                    if (chkCaptureEnable.Checked) // 캡처 모드가 켜져있을 때만
+                    Point fixedPos = e.Location;
+                                        
+                    if (_editTarget != -1)  // --- 상황 A: 개별 수정 모드 (체크박스 여부와 상관없이 작동)
+                    {
+                        UpdateLog($"📸 [개별 캡처] 시작 (좌표: {fixedPos.X}, {fixedPos.Y})");
+                        Bitmap avgCap = await CaptureAverageImage(fixedPos);
+
+                        if (_editTarget == 0)
+                        {
+                            _btnDown = new CargoButton { Pos = fixedPos, Image = avgCap, Name = "Down" };
+                            picDown.Image = (Bitmap)avgCap.Clone();
+                        }
+                        else if (_editTarget == 1)
+                        {
+                            _btnConfirm = new CargoButton { Pos = fixedPos, Image = avgCap, Name = "Confirm" };
+                            picConfirm.Image = (Bitmap)avgCap.Clone();
+                        }
+                        else if (_editTarget == 2)
+                        {
+                            _btnUp = new CargoButton { Pos = fixedPos, Image = avgCap, Name = "Up" };
+                            picUp.Image = (Bitmap)avgCap.Clone();
+                        }
+
+                        _editTarget = -1; // 수정 모드 초기화
+                        UpdateLog("✅ 개별 버튼 수정 완료 (저장 버튼을 눌러 확정하세요)");
+                        return;
+                    }
+
+
+                    if (chkCaptureEnable.Checked) // --- 상황 B: 일반 순차 캡처 모드 (체크박스 켜져 있을 때만)
                     {
                         Point currentPos = e.Location;
                         Bitmap bmp = await CaptureAverageImage(currentPos); // 10회 평균 캡처
@@ -409,6 +462,10 @@ namespace SC_StepByStep_v1
             // [키보드] F12, F3 등 단축키 처리
             _globalHook.KeyDown += (s, e) =>
             {
+                if (_isMasterRole && _isSyncEnabled)
+                {
+                    SendCommand($"KD|{(int)e.KeyCode}"); // KeyCode(VKey)를 보내야 수신부의 MapVirtualKey가 작동함
+                }
                 if (e.KeyCode == Keys.F12)
                 {
                     _isSyncEnabled = !_isSyncEnabled;
@@ -471,11 +528,12 @@ namespace SC_StepByStep_v1
 
                     // 2. Confirm 인식 단계 (이전 코드의 정밀 로직 유지)
                     await Task.Delay(GetInt(txtWaitConfirm, 1000));
+                    Cursor.Position = _btnConfirm.Pos;
                     if (!await WaitAndMatchOnly(_btnConfirm, "Confirm", GetInt(txtWaitMatch, 5000))) break;
 
                     // 3. 서브 PC 1차 동작 요청 (클릭 지시)
                     _isSubReady = false;
-                    SendCommand("WAIT_CLICK"); // 보조 PC에 동작 신호 송신
+                    SendCommand("SUB_ACTION_1"); // 보조 PC에 동작 신호 송신
                     string modeText = chkSubManual.Checked ? "수동 클릭" : "자동 동작";  // 디자인의 chkSubManual이 체크되어 있다면 로그를 다르게 표시
                     UpdateLog("📡 서브 PC 1차 동작 요청 중...");
 
@@ -989,8 +1047,27 @@ namespace SC_StepByStep_v1
         {
             return double.TryParse(txt.Text, out double result) ? result : defaultValue;
         }
+        private void InitPictureBoxEvents()
+        {
+            // 이미지 박스를 클릭하면 "준비 상태"가 됩니다.
+            picDown.Click += (s, e) =>
+            {
+                _editTarget = 0;
+                UpdateLog("🎯 [Down] 수정 대기 중... 게임 화면 위에서 우클릭하세요.");
+            };
+            picConfirm.Click += (s, e) =>
+            {
+                _editTarget = 1;
+                UpdateLog("🎯 [Confirm] 수정 대기 중... 게임 화면 위에서 우클릭하세요.");
+            };
+            picUp.Click += (s, e) =>
+            {
+                _editTarget = 2;
+                UpdateLog("🎯 [Up] 수정 대기 중... 게임 화면 위에서 우클릭하세요.");
+            };
+        }
 
-               
+
         private void btnSaveConfig_Click(object sender, EventArgs e) => SaveSettings();
 
         #endregion
