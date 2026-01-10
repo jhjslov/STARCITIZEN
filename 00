@@ -36,7 +36,7 @@ namespace SC_StepByStep_v1
         // --- A. 핵심 상태 제어 ---
         private bool _isMasterRole = true;      // true: 마스터(서버), false: 보조(클라이언트)
         private bool _isConnected = false;      // 네트워크 연결 상태
-        private bool _isSyncEnabled = false;    // [F12] 마우스/키보드 동기화 활성화 여부
+        private bool _isSyncEnabled = false; // 캐릭터 동기화 ON/OFF 상태 저장
         private bool _isMacroRunning = false;   // [F3] 매크로 실행 중 여부
         private bool _isSubReady = false; // 서브 PC의 완료 신호를 체크할 변수
         private bool _waitingForUserClick = false; // [보조 PC] 수동 클릭 대기 상태
@@ -49,7 +49,7 @@ namespace SC_StepByStep_v1
 
         // --- C. 후킹 및 동기화 ---
         private IKeyboardMouseEvents _globalHook;
-        private Point _lastSentPos;
+        private Point _lastSentPos = new Point(0, 0); // 마지막 전송 좌표 저장
         private Point _lastPos;                 // 마우스 이전 위치 (델타 계산용)
         private int _deltaX, _deltaY;           // 전송할 마우스 이동량 누적
         private System.Windows.Forms.Timer _syncTimer; // 동기화 패킷 전송 타이머
@@ -248,45 +248,48 @@ namespace SC_StepByStep_v1
         // 수신된 메시지 처리
         private async void ProcessMessage(string msg)
         {
+            FlashStatusLabel();
+
             if (string.IsNullOrEmpty(msg)) return;
             UpdateLog($"[Recv] {msg}");
 
-            string[] p = msg.Split('|');
+            // 파이프(|) 기준으로 명령과 데이터를 나눕니다.
+            string[] parts = msg.Split('|');
+            if (parts.Length < 2) return;
 
-            // 1. 마우스 이동 (절대 좌표 모드 활용)
-            if (p[0] == "MOVE" && p.Length == 3)
+            string commandName = parts[0];
+
+            // 1. 마우스 이동 실행
+            if (commandName == "MOVE" && parts.Length == 3)
             {
-                int targetX = int.Parse(p[1]);
-                int targetY = int.Parse(p[2]);
+                int dx = int.Parse(parts[1]);
+                int dy = int.Parse(parts[2]);
 
+                // 이전 코드 방식: 상대 이동(0x0001)
+                // 현재 위치와 목표 위치의 차이를 계산하여 이동
                 this.Invoke((MethodInvoker)delegate {
-                    // 1. 현재 서브 PC의 커서 위치 가져오기
-                    Point currentPos = Cursor.Position;
+                    int moveX = dx - Cursor.Position.X;
+                    int moveY = dy - Cursor.Position.Y;
 
-                    // 2. 이동해야 할 거리(차이값) 계산
-                    int dx = targetX - currentPos.X;
-                    int dy = targetY - currentPos.Y;
-
-                    // 3. 차이가 있을 때만 상대 이동(0x0001) 실행
-                    if (dx != 0 || dy != 0)
+                    if (moveX != 0 || moveY != 0)
                     {
-                        // MOUSEEVENTF_MOVE = 0x0001
-                        // dx, dy는 int 타입이므로 선언된 타입과 일치할 것입니다.
-                        mouse_event(0x0001, dx, dy, 0, 0);
+                        mouse_event(0x0001, moveX, moveY, 0, 0);
                     }
                 });
             }
-            // 2. 키보드 동기화 (스캔코드 방식)
-            else if ((p[0] == "KD" || p[0] == "KU") && p.Length == 2)
+            // 2. 키보드 누름 (KD)
+            else if (commandName == "KD" && parts.Length == 2)
             {
-                int vk = int.Parse(p[1]);
-                // 윈도우 가상키를 게임용 스캔코드로 변환
-                uint scanCode = MapVirtualKey((uint)vk, 0);
-
-                if (p[0] == "KD")
-                    SendKeyScan(scanCode, 0, true);  // 누르기
-                else
-                    SendKeyScan(scanCode, 0, false); // 떼기
+                uint vk = (uint)int.Parse(parts[1]);
+                uint scanCode = MapVirtualKey(vk, 0);
+                SendKeyScan(scanCode, 0, true); // Key Down
+            }
+            // 3. 키보드 뗌 (KU)
+            else if (commandName == "KU" && parts.Length == 2)
+            {
+                uint vk = (uint)int.Parse(parts[1]);
+                uint scanCode = MapVirtualKey(vk, 0);
+                SendKeyScan(scanCode, 0, false); // Key Up
             }
 
             // 2. 기존 자동화 신호 처리 (SUB_ACTION_1, 2 등)
@@ -981,6 +984,9 @@ namespace SC_StepByStep_v1
         // 1. 마우스 이동 (배율 적용)
         private void OnMouseMove(int x, int y)
         {
+            // 로그를 먼저 찍어서 함수가 호출되는지 확인
+            // UpdateLog($"Hook: {x}, {y}"); 
+
             if (!_isSyncEnabled || !_isConnected || !_isMasterRole) return;
 
             double rx = GetDouble(txtRatioX, 1.0);
@@ -989,11 +995,12 @@ namespace SC_StepByStep_v1
             int tx = (int)(x * rx);
             int ty = (int)(y * ry);
 
-            // 부하를 줄이기 위해 2px 이상 차이 날 때만 전송
             if (Math.Abs(_lastSentPos.X - tx) > 2 || Math.Abs(_lastSentPos.Y - ty) > 2)
             {
                 SendCommand($"MOVE|{tx}|{ty}");
                 _lastSentPos = new Point(tx, ty);
+                // 전송 성공 시 로그 확인
+                UpdateLog($"[Send] MOVE|{tx}|{ty}");
             }
         }
 
