@@ -17,15 +17,19 @@ namespace SC_StepByStep_v1
     {
         #region [1. WinAPI 및 상수 정의]
         // 마우스 클릭 및 키보드 입력을 강제로 발생시키기 위한 Win32 API
-        [DllImport("user32.dll")] static extern void mouse_event(uint dwFlags, int dx, int dy, uint dwData, uint dwExtraInfo);
-        [DllImport("user32.dll")] static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, int dwExtraInfo);
-        [DllImport("user32.dll")] static extern uint MapVirtualKey(uint uCode, uint uMapType);
+        [DllImport("user32.dll")]
+        static extern void mouse_event(uint dwFlags, int dx, int dy, int dwData, int dwExtraInfo);
+        [DllImport("user32.dll")]
+        static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, int dwExtraInfo);
+        [DllImport("user32.dll")]
+        static extern uint MapVirtualKey(uint uCode, uint uMapType);
 
         // API 상수 (DirectX 게임 호환성을 위해 스캔코드 사용)
         const uint KEYEVENTF_SCANCODE = 0x0008;
         const uint KEYEVENTF_KEYUP = 0x0002;
-        const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
-        const uint MOUSEEVENTF_LEFTUP = 0x0004;
+        private const uint MOUSEEVENTF_MOVE = 0x0001;      // 마우스 이동
+        private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;  // 왼쪽 버튼 누름
+        private const uint MOUSEEVENTF_LEFTUP = 0x0004;    // 왼쪽 버튼 뗌
 
         // 버튼 이미지와 위치를 저장할 구조체
         public struct CargoButton { public Point Pos; public Bitmap Image; public string Name; }
@@ -250,49 +254,44 @@ namespace SC_StepByStep_v1
         // 수신된 메시지 처리
         private async void ProcessMessage(string msg)
         {
+            if (string.IsNullOrEmpty(msg)) return;
+
+            // 상태 표시 및 로그 (MOVE 신호는 로그가 너무 많으므로 제외하는 것 권장)
+            if (!msg.StartsWith("MOVE")) UpdateLog($"[Recv] {msg}");
             FlashStatusLabel();
 
-            if (string.IsNullOrEmpty(msg)) return;
-            UpdateLog($"[Recv] {msg}"); // 로그 확인용
-
             string[] parts = msg.Split('|');
-            string cmd = parts[0]; // 명령어 확인 (MOVE, KD, KU 등)
+            string cmd = parts[0];
 
-            // 1. 마우스 이동 신호 처리 (이 부분이 빠져 있었습니다!)
+            // 1. 마우스 실시간 이동 (성능 최적화: Invoke 제거)
             if (cmd == "MOVE" && parts.Length == 3)
             {
-                // 전송된 목표 좌표 파싱
                 int targetX = int.Parse(parts[1]);
                 int targetY = int.Parse(parts[2]);
 
-                this.Invoke((MethodInvoker)delegate {
-                    // [중요] 현재 위치와 목표 위치의 차이(Delta)를 계산하여 이동
-                    // 0x0001 플래그는 '상대적 이동'을 의미하므로 차이값을 넣어야 합니다.
-                    int dx = targetX - Cursor.Position.X;
-                    int dy = targetY - Cursor.Position.Y;
+                // 현재 서브 PC 마우스 위치와의 차이 계산
+                int dx = targetX - Cursor.Position.X;
+                int dy = targetY - Cursor.Position.Y;
 
-                    // 변화가 있을 때만 이동 신호 발생
-                    if (dx != 0 || dy != 0)
-                    {
-                        mouse_event(0x0001, dx, dy, 0, 0);
-                    }
-                });
+                if (dx != 0 || dy != 0)
+                {
+                    // 0x0001: MOUSEEVENTF_MOVE (상대 좌표 이동)
+                    mouse_event(0x0001, dx, dy, 0, 0);
+                }
+                return; // 이동 처리는 여기서 끝
             }
-            // 2. 키보드 누름 (Key Down)
-            else if (cmd == "KD" && parts.Length == 2)
-            {
-                int vk = int.Parse(parts[1]);
-                // 윈도우 가상키 -> 스캔코드 변환 (게임 호환성 위함)
-                uint scanCode = MapVirtualKey((uint)vk, 0);
-                // dwFlags: 0(누름), 2(뗌) | 8(스캔코드 모드)
-                keybd_event(0, (byte)scanCode, 0x0008, 0);
-            }
-            // 3. 키보드 뗌 (Key Up)
-            else if (cmd == "KU" && parts.Length == 2)
+
+            // 2. 키보드 제어 (스캔코드 방식 유지)
+            else if ((cmd == "KD" || cmd == "KU") && parts.Length == 2)
             {
                 int vk = int.Parse(parts[1]);
                 uint scanCode = MapVirtualKey((uint)vk, 0);
-                keybd_event(0, (byte)scanCode, 0x0008 | 0x0002, 0);
+                uint flags = 0x0008; // MOUSEEVENTF_SCANCODE
+
+                if (cmd == "KU") flags |= 0x0002; // KEYEVENTF_KEYUP
+
+                // 첫 번째 인자에 vk를 넣어주는 것이 더 안정적입니다.
+                keybd_event((byte)vk, (byte)scanCode, flags, 0);
             }
 
             // 2. 기존 자동화 신호 처리 (SUB_ACTION_1, 2 등)
@@ -355,8 +354,16 @@ namespace SC_StepByStep_v1
                     _lastPos = e.Location;
                     return;
                 }
-                _deltaX += e.X - _lastPos.X;
-                _deltaY += e.Y - _lastPos.Y;
+
+                int dx = e.X - _lastPos.X;
+                int dy = e.Y - _lastPos.Y;
+
+                if (dx != 0 || dy != 0)
+                {
+                    // 서브 PC로 델타값 전송
+                    SendCommand($"MOUSE_MOVE|{dx}|{dy}");
+                }
+
                 _lastPos = e.Location;
             };
 
