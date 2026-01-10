@@ -17,7 +17,7 @@ namespace SC_StepByStep_v1
     {
         #region [1. WinAPI 및 상수 정의]
         // 마우스 클릭 및 키보드 입력을 강제로 발생시키기 위한 Win32 API
-        [DllImport("user32.dll")] static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, int dwExtraInfo);
+        [DllImport("user32.dll")] static extern void mouse_event(uint dwFlags, int dx, int dy, uint dwData, uint dwExtraInfo);
         [DllImport("user32.dll")] static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, int dwExtraInfo);
 
         // API 상수 (DirectX 게임 호환성을 위해 스캔코드 사용)
@@ -81,19 +81,12 @@ namespace SC_StepByStep_v1
             // 3. UI 초기값 설정
             txtMyIP.Text = GetLocalIP(); // 내 IP 표시
             UpdateRoleUI();              // 역할에 따른 UI 갱신
-            UpdateLog("✅ 프로그램이 준비되었습니다. (v3.9.7).");
-        }
-        private void SetupAntiKick()
-        {
+            // Anti-Kick 타이머 설정 및 시작
             _antiKickTimer = new System.Windows.Forms.Timer();
-            _antiKickTimer.Interval = 5000; // 300초(5분)마다 작동
-            _antiKickTimer.Tick += AntiKickTimer_Tick;
-            _antiKickTimer.Start();
-
-            // 체크박스 클릭 시 즉시 반응하도록 이벤트 연결 (디자인 창에서 더블클릭해도 생성됨)
-            chkAntiKick.CheckedChanged += (s, e) => {
-                UpdateLog(chkAntiKick.Checked ? "🛡️ Anti-Kick 감시 시작 (5분 주기 Enter)" : "🔓 Anti-Kick 중단");
-            };
+            _antiKickTimer.Interval = 300000; // 5분 주기
+            _antiKickTimer.Tick += AntiKickTimer_Tick; // 이벤트 연결
+            _antiKickTimer.Start(); // 타이머 가동 시작
+            UpdateLog("✅ 프로그램이 준비되었습니다. (v3.9.7).");
         }
         // 역할(마스터/보조)에 따라 UI 텍스트와 색상을 변경
         private void UpdateRoleUI()
@@ -110,11 +103,15 @@ namespace SC_StepByStep_v1
             // 상태에 따라 입력창 활성/비활성 처리
             txtTargetIP.Enabled = !_isMasterRole; // 보조일 때만 타겟 IP 입력 가능
         }
-        
+
         private void chkAlwaysOnTop_CheckedChanged(object sender, EventArgs e)
         {
             this.TopMost = chkAlwaysOnTop.Checked;
             UpdateLog(chkAlwaysOnTop.Checked ? "📌 항상 위 설정" : "🔓 항상 위 해제");
+        }
+        private void chkAntiKick_CheckedChanged(object sender, EventArgs e)
+        {
+            UpdateLog(chkAntiKick.Checked ? "🛡️ Anti-Kick 감시 시작 (5분 주기 Enter)" : "🔓 Anti-Kick 중단");
         }
         // [이벤트] 역할 전환 버튼 클릭
         private void btnToggleRole_Click(object sender, EventArgs e)
@@ -252,26 +249,35 @@ namespace SC_StepByStep_v1
             }
             else if (msg == "SUB_ACTION_2") // 두 번째 클릭 신호 (SyncMove 적용 구간)
             {
-                UpdateLog("📡 2차 클릭 신호 수신 (SyncMove 적용)");
+                UpdateLog("📡 2차 동작 신호 수신 (상대 이동 보정)");
 
-                // 1. 클릭 전 하강 (보조 PC의 chkSyncMove가 켜져 있을 때만)
-                bool isSyncEnabled = chkSyncMove.Checked;
-                int dist = GetInt(txtSyncDist, 5);
+                // 1. 설정값 가져오기
+                bool isElevatorCorrectionEnabled = chkSubManual.Checked;
+                int dist = GetInt(txtSyncDist, 5); // 이동할 픽셀 거리
 
-                if (isSyncEnabled)
+                if (isElevatorCorrectionEnabled)
                 {
-                    mouse_event(0x0001, 0, (uint)dist, 0, 0); // 하강
-                    await Task.Delay(50);
+                    // [핵심] 0x0001 플래그는 현재 위치에서 dx, dy만큼 '이동'시킵니다.
+                    // mouse_event(dwFlags, dx, dy, dwData, dwExtraInfo)
+                    UpdateLog($"🖱️ 마우스 {dist}px 하강 이동");
+                    mouse_event(0x0001, 0, dist, 0, 0);
+
+                    // 이동 후 게임이 인식할 수 있도록 아주 짧은 물리적 대기시간 부여
+                    await Task.Delay(150);
                 }
 
                 // 2. 실제 클릭 실행
                 mouse_event(0x0002 | 0x0004, 0, 0, 0, 0);
 
                 // 3. 클릭 후 상승 (200ms 대기 후)
-                if (isSyncEnabled)
+                if (isElevatorCorrectionEnabled)
                 {
-                    await Task.Delay(200); // 사용자 요청 사항
-                    mouse_event(0x0001, 0, (uint)-dist, 0, 0); // 다시 상승
+                    // 3. 사용자 요청: 클릭 후 200ms 대기
+                    await Task.Delay(200);
+
+                    // 4. 다시 원래 위치로 상승 이동
+                    UpdateLog($"🖱️ 마우스 {dist}px 상승 복귀");
+                    mouse_event(0x0001, 0, -dist, 0, 0);
                 }
 
                 SendCommand("SUB_READY"); // 완료 신호 회신
@@ -899,16 +905,20 @@ namespace SC_StepByStep_v1
         }
         private async void AntiKickTimer_Tick(object sender, EventArgs e)
         {
-            // 매크로 동작 여부와 상관없이 '체크박스'만 켜져 있으면 작동
+            // 체크박스가 켜져 있을 때만 작동
             if (chkAntiKick.Checked)
             {
-                // 게임 내 채팅창이 열리는 것을 방지하기 위해 엔터를 두 번(열기/닫기) 빠르게 입력
-                UpdateLog("🛡️ Anti-Kick: 자리비움 방지 Enter 입력");
+                UpdateLog("🛡️ Anti-Kick: 마우스 미세 이동 실행");
 
-                // Enter의 스캔코드는 0x1C입니다.
-                await SendKeyScan(0x1C, 50);  // Press & Release
-                await Task.Delay(300);        // 0.3초 간격
-                await SendKeyScan(0x1C, 50);  // Press & Release
+                // 1. 오른쪽으로 1픽셀 이동 (MOUSEEVENTF_MOVE = 0x0001)
+                mouse_event(0x0001, 1, 0, 0, 0);
+                await Task.Delay(100);
+
+                // 2. 왼쪽으로 다시 1픽셀 이동하여 원위치
+                mouse_event(0x0001, -1, 0, 0, 0);
+
+                // 필요하다면 아주 미세한 클릭을 추가할 수도 있으나, 
+                // 움직임만으로도 대부분의 Anti-Kick은 방지됩니다.
             }
         }
 
@@ -916,8 +926,5 @@ namespace SC_StepByStep_v1
 
         #endregion
 
-
-
-   
     }
 }
