@@ -56,6 +56,8 @@ namespace SC_StepByStep_v1
         private Point _lastSentPos = new Point(0, 0); // 마지막 전송 좌표 저장
         private Point _lastPos;                 // 마우스 이전 위치 (델타 계산용)
         private int _deltaX = 0, _deltaY = 0;          // 전송할 마우스 이동량 누적
+        private int _accumulatedDX = 0;
+        private int _accumulatedDY = 0;
         private System.Windows.Forms.Timer _syncTimer; // 동기화 패킷 전송 타이머
 
         // --- D. 매크로 및 설정 ---
@@ -82,10 +84,28 @@ namespace SC_StepByStep_v1
             // 2. 후킹 및 타이머 시작
             SubscribeHooks();
             InitSyncTimer();
+            chkSubManual.CheckedChanged += (s, e) => {
+                SendCommand($"SET_MANUAL|{chkSubManual.Checked}");
+                UpdateLog($"[설정] 서브 수동 모드: {(chkSubManual.Checked ? "ON" : "OFF")}");
+            };
+            chkSyncMove.CheckedChanged += (s, e) => { // SyncMove 체크박스 이름 확인 필요
+                SendCommand($"SET_SYNC|{chkSyncMove.Checked}");  // 서브 PC에게 체크 상태를 보냄 (예: SET_SYNC|True)
+                UpdateLog($"[설정] 내려놓기 보정: {(chkSyncMove.Checked ? "ON" : "OFF")}");
+            };
+            chkAlwaysOnTop.CheckedChanged += (s, e) => {
+                this.TopMost = chkAlwaysOnTop.Checked;
+                UpdateLog($"📌 항상 위: {(chkAlwaysOnTop.Checked ? "설정" : "🔓 해제")}");
+            };
+            chkAntiKick.CheckedChanged += (s, e) => {
+                SendCommand($"SET_AntiKick|{chkAntiKick.Checked}");
+                UpdateLog(chkAntiKick.Checked ? "🛡️ Anti-Kick 감시 시작 (5분 주기 Enter)" : "🔓 Anti-Kick 중단");
+            };
+            chkSoundEnable.CheckedChanged += (s, e) => {
+                UpdateLog(chkSoundEnable.Checked ? "매크로 완료 Sound 설정" : "매크로 완료 Sound 해제");
+            };
 
-
-            // 3. UI 초기값 설정
-            txtMyIP.Text = GetLocalIP(); // 내 IP 표시
+        // 3. UI 초기값 설정
+        txtMyIP.Text = GetLocalIP(); // 내 IP 표시
             UpdateRoleUI();              // 역할에 따른 UI 갱신
             // Anti-Kick 타이머 설정 및 시작
             _antiKickTimer = new System.Windows.Forms.Timer();
@@ -103,24 +123,14 @@ namespace SC_StepByStep_v1
             // 레이블: 현재 모드 표시
             lblRole.Text = _isMasterRole ? "MODE: MASTER (Server)" : "MODE: SUB (Client)";
             lblRole.ForeColor = _isMasterRole ? Color.Cyan : Color.Orange;
-
+            
             // 버튼: 역할에 따라 '서버 시작' 또는 '접속'으로 텍스트 변경
             btnConnect.Text = _isMasterRole ? "서버 대기 시작" : "마스터 접속";
 
             // 상태에 따라 입력창 활성/비활성 처리
             txtTargetIP.Enabled = !_isMasterRole; // 보조일 때만 타겟 IP 입력 가능
         }
-
-        private void chkAlwaysOnTop_CheckedChanged(object sender, EventArgs e)
-        {
-            this.TopMost = chkAlwaysOnTop.Checked;
-            UpdateLog(chkAlwaysOnTop.Checked ? "📌 항상 위 설정" : "🔓 항상 위 해제");
-        }
-        private void chkAntiKick_CheckedChanged(object sender, EventArgs e)
-        {
-            UpdateLog(chkAntiKick.Checked ? "🛡️ Anti-Kick 감시 시작 (5분 주기 Enter)" : "🔓 Anti-Kick 중단");
-        }
-
+  
         // [이벤트] 역할 전환 버튼 클릭
         private void btnToggleRole_Click(object sender, EventArgs e)
         {
@@ -257,30 +267,21 @@ namespace SC_StepByStep_v1
         private async void ProcessMessage(string msg)
         {
             if (string.IsNullOrEmpty(msg)) return;
-
-            // 상태 표시 및 로그 (MOVE 신호는 로그가 너무 많으므로 제외하는 것 권장)
-            if (!msg.StartsWith("MOVE")) UpdateLog($"[Recv] {msg}");
             FlashStatusLabel();
-
+            // 상태 표시 및 로그 (MOVE 신호는 로그가 너무 많으므로 제외하는 것 권장)
+            UpdateLog($"[Recv] {msg}");
+            
             string[] parts = msg.Split('|');
             string cmd = parts[0];
 
-            // 1. 마우스 실시간 이동 (성능 최적화: Invoke 제거)
             if (cmd == "MOVE" && parts.Length == 3)
             {
-                int targetX = int.Parse(parts[1]);
-                int targetY = int.Parse(parts[2]);
+                int dx = int.Parse(parts[1]);
+                int dy = int.Parse(parts[2]);
 
-                // 현재 서브 PC 마우스 위치와의 차이 계산
-                int dx = targetX - Cursor.Position.X;
-                int dy = targetY - Cursor.Position.Y;
-
-                if (dx != 0 || dy != 0)
-                {
-                    // 0x0001: MOUSEEVENTF_MOVE (상대 좌표 이동)
-                    mouse_event(0x0001, dx, dy, 0, 0);
-                }
-                return; // 이동 처리는 여기서 끝
+                // 0x0001: MOUSEEVENTF_MOVE (상대적 이동)
+                // [중요] Cursor.Position.X 등을 빼는 계산을 절대 하지 마세요!
+                mouse_event(0x0001, dx, dy, 0, 0);
             }
 
             // 2. 키보드 제어 (스캔코드 방식 유지)
@@ -295,7 +296,28 @@ namespace SC_StepByStep_v1
                 // 첫 번째 인자에 vk를 넣어주는 것이 더 안정적입니다.
                 keybd_event((byte)vk, (byte)scanCode, flags, 0);
             }
-            if (_isMasterRole)
+            if (cmd == "SET_SYNC" && parts.Length == 2)
+            {
+                bool isChecked = bool.Parse(parts[1]);
+                this.Invoke((MethodInvoker)delegate {
+                    chkSyncMove.Checked = isChecked; // 서브 PC의 UI를 메인과 동일하게 변경
+                });
+            }
+            else if (cmd == "SET_MANUAL" && parts.Length == 2)
+            {
+                bool isChecked = bool.Parse(parts[1]);
+                this.Invoke((MethodInvoker)delegate {
+                    chkSubManual.Checked = isChecked;
+                });
+            }
+            else if (cmd == "SET_AntiKick" && parts.Length == 2)
+            {
+                bool isChecked = bool.Parse(parts[1]);
+                this.Invoke((MethodInvoker)delegate {
+                    chkAntiKick.Checked = isChecked;
+                });
+            }
+            else if(_isMasterRole)
             {
                 // ==========================================
                 // [메인 PC] 서브 PC로부터의 응답 처리
@@ -379,14 +401,9 @@ namespace SC_StepByStep_v1
                     return;
                 }
 
-                int dx = e.X - _lastPos.X;
-                int dy = e.Y - _lastPos.Y;
-
-                if (dx != 0 || dy != 0)
-                {
-                    // 서브 PC로 델타값 전송
-                    SendCommand($"MOUSE_MOVE|{dx}|{dy}");
-                }
+                // 전송하지 않고 값만 누적
+                _accumulatedDX += e.X - _lastPos.X;
+                _accumulatedDY += e.Y - _lastPos.Y;
 
                 _lastPos = e.Location;
             };
@@ -462,14 +479,18 @@ namespace SC_StepByStep_v1
             // [키보드] F12, F3 등 단축키 처리
             _globalHook.KeyDown += (s, e) =>
             {
-                if (_isMasterRole && _isSyncEnabled)
-                {
-                    SendCommand($"KD|{(int)e.KeyCode}"); // KeyCode(VKey)를 보내야 수신부의 MapVirtualKey가 작동함
-                }
                 if (e.KeyCode == Keys.F12)
                 {
                     _isSyncEnabled = !_isSyncEnabled;
                     UpdateLog(_isSyncEnabled ? "▶ [F12] 동기화 시작 (ON)" : "■ [F12] 동기화 중지 (OFF)");
+                }
+                if (_isMasterRole && _isSyncEnabled)
+                {
+                    // 2. 키보드 필터링 적용 (WASD, F, Shift 등 특정 키만 전송)
+                    if (IsMovementKey(e.KeyCode))
+                    {
+                        SendCommand($"KD|{(int)e.KeyCode}"); // KeyCode(VKey)를 보내야 수신부의 MapVirtualKey가 작동함
+                    }                    
                 }
                 else if (e.KeyCode == Keys.F3 && _isMasterRole)
                 {
@@ -481,22 +502,32 @@ namespace SC_StepByStep_v1
                     }
                 }
             };
+            _globalHook.KeyUp += (s, e) =>
+            {
+                if (_isMasterRole && _isSyncEnabled)
+                {
+                    SendCommand($"KU|{(int)e.KeyCode}");
+                }
+            };
         }
 
         // 동기화 타이머 (너무 잦은 전송 방지)
         private void InitSyncTimer()
         {
-            _syncTimer = new System.Windows.Forms.Timer { Interval = 10 };
-            _syncTimer.Tick += (s, e) =>
-            {
-                if (_isSyncEnabled && _isMasterRole && (_deltaX != 0 || _deltaY != 0))
+            _syncTimer = new System.Windows.Forms.Timer();
+            _syncTimer.Interval = 10; // 10ms 설정
+            _syncTimer.Tick += (s, e) => {
+                if (_isMasterRole && _isSyncEnabled)
                 {
-                    // 좌표 비율 계산 (UI에 입력된 값이 없으면 1배)
-                    double rX = double.TryParse(txtRatioX.Text, out double x) ? x : 1.0;
-                    double rY = double.TryParse(txtRatioY.Text, out double y) ? y : 1.0;
+                    // 누적된 값이 있을 때만 전송
+                    if (_accumulatedDX != 0 || _accumulatedDY != 0)
+                    {
+                        SendCommand($"MOVE|{_accumulatedDX}|{_accumulatedDY}");
 
-                    SendCommand($"M_MOVE|{(int)(_deltaX * rX)}|{(int)(_deltaY * rY)}");
-                    _deltaX = 0; _deltaY = 0;
+                        // 전송 후 누적값 초기화
+                        _accumulatedDX = 0;
+                        _accumulatedDY = 0;
+                    }
                 }
             };
             _syncTimer.Start();
@@ -1065,6 +1096,24 @@ namespace SC_StepByStep_v1
                 _editTarget = 2;
                 UpdateLog("🎯 [Up] 수정 대기 중... 게임 화면 위에서 우클릭하세요.");
             };
+        }
+        private bool IsMovementKey(Keys key)
+        {
+            switch (key)
+            {
+                case Keys.W:
+                case Keys.A:
+                case Keys.S:
+                case Keys.D:
+                case Keys.F:      // 상호작용
+                case Keys.LShiftKey:
+                case Keys.ShiftKey:
+                case Keys.Space:  // 점프/상승
+                case Keys.LControlKey: // 하강
+                    return true;
+                default:
+                    return false;
+            }
         }
 
 
