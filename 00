@@ -79,33 +79,43 @@ namespace SC_StepByStep_v1
         {
             // 이제 창 핸들이 생성되었으므로 안전하게 로그를 남길 수 있습니다.
             // 1. 설정 파일 로드 (좌표, IP 등)
-            LoadSettings();
+            LoadSettings();           
 
             // 2. 후킹 및 타이머 시작
             SubscribeHooks();
             InitSyncTimer();
-            chkSubManual.CheckedChanged += (s, e) => {
+            chkSubManual.CheckedChanged += (s, e) =>
+            {
                 SendCommand($"SET_MANUAL|{chkSubManual.Checked}");
                 UpdateLog($"[설정] 서브 수동 모드: {(chkSubManual.Checked ? "ON" : "OFF")}");
             };
-            chkSyncMove.CheckedChanged += (s, e) => { // SyncMove 체크박스 이름 확인 필요
-                SendCommand($"SET_SYNC|{chkSyncMove.Checked}");  // 서브 PC에게 체크 상태를 보냄 (예: SET_SYNC|True)
-                UpdateLog($"[설정] 내려놓기 보정: {(chkSyncMove.Checked ? "ON" : "OFF")}");
+            chkSyncCagoLV.CheckedChanged += (s, e) =>
+            { // SyncMove 체크박스 이름 확인 필요
+                SendCommand($"SET_SYNC|{chkSyncCagoLV.Checked}");  // 서브 PC에게 체크 상태를 보냄 (예: SET_SYNC|True)
+                UpdateLog($"[설정] 내려놓기 보정: {(chkSyncCagoLV.Checked ? "ON" : "OFF")}");
             };
-            chkAlwaysOnTop.CheckedChanged += (s, e) => {
+            chkAlwaysOnTop.CheckedChanged += (s, e) =>
+            {
                 this.TopMost = chkAlwaysOnTop.Checked;
                 UpdateLog($"📌 항상 위: {(chkAlwaysOnTop.Checked ? "설정" : "🔓 해제")}");
             };
-            chkAntiKick.CheckedChanged += (s, e) => {
+            chkAntiKick.CheckedChanged += (s, e) =>
+            {
                 SendCommand($"SET_AntiKick|{chkAntiKick.Checked}");
                 UpdateLog(chkAntiKick.Checked ? "🛡️ Anti-Kick 감시 시작 (5분 주기 Enter)" : "🔓 Anti-Kick 중단");
             };
-            chkSoundEnable.CheckedChanged += (s, e) => {
+            chkSoundEnable.CheckedChanged += (s, e) =>
+            {
                 UpdateLog(chkSoundEnable.Checked ? "매크로 완료 Sound 설정" : "매크로 완료 Sound 해제");
             };
 
-        // 3. UI 초기값 설정
-        txtMyIP.Text = GetLocalIP(); // 내 IP 표시
+            // 3. UI 초기값 설정
+            txtMyIP.Text = GetLocalIP(); // 내 IP 표시
+            if (txtTargetIP.Text.Trim() == txtMyIP.Text)
+            {
+                txtTargetIP.Clear();
+                UpdateLog("ℹ️ 자신과 동일한 IP 주소 입력을 방지하기 위해 입력란을 비웠습니다.");
+            }
             UpdateRoleUI();              // 역할에 따른 UI 갱신
             // Anti-Kick 타이머 설정 및 시작
             _antiKickTimer = new System.Windows.Forms.Timer();
@@ -123,14 +133,14 @@ namespace SC_StepByStep_v1
             // 레이블: 현재 모드 표시
             lblRole.Text = _isMasterRole ? "MODE: MASTER (Server)" : "MODE: SUB (Client)";
             lblRole.ForeColor = _isMasterRole ? Color.Cyan : Color.Orange;
-            
+
             // 버튼: 역할에 따라 '서버 시작' 또는 '접속'으로 텍스트 변경
             btnConnect.Text = _isMasterRole ? "서버 대기 시작" : "마스터 접속";
 
             // 상태에 따라 입력창 활성/비활성 처리
             txtTargetIP.Enabled = !_isMasterRole; // 보조일 때만 타겟 IP 입력 가능
         }
-  
+
         // [이벤트] 역할 전환 버튼 클릭
         private void btnToggleRole_Click(object sender, EventArgs e)
         {
@@ -235,7 +245,10 @@ namespace SC_StepByStep_v1
                     byte[] data = Encoding.UTF8.GetBytes(command + "\n");
                     _stream.Write(data, 0, data.Length);
                     _stream.Flush(); // 즉시 전송 보장
-                    UpdateLog($"[Send] {command}");
+                    if (!command.StartsWith("MOVE|"))   // [수정] MOVE 명령이 아닐 때만 로그를 출력합니다.
+                    {
+                        UpdateLog($"[Send] {command}");
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -267,25 +280,23 @@ namespace SC_StepByStep_v1
         private async void ProcessMessage(string msg)
         {
             if (string.IsNullOrEmpty(msg)) return;
+            if (!msg.StartsWith("MOVE")) UpdateLog($"[Recv] {msg}");
             FlashStatusLabel();
-            // 상태 표시 및 로그 (MOVE 신호는 로그가 너무 많으므로 제외하는 것 권장)
-            UpdateLog($"[Recv] {msg}");
-            
             string[] parts = msg.Split('|');
             string cmd = parts[0];
 
+            // 1. MOVE 신호는 로그를 찍지 않고 최상단에서 바로 처리
             if (cmd == "MOVE" && parts.Length == 3)
             {
                 int dx = int.Parse(parts[1]);
                 int dy = int.Parse(parts[2]);
 
-                // 0x0001: MOUSEEVENTF_MOVE (상대적 이동)
-                // [중요] Cursor.Position.X 등을 빼는 계산을 절대 하지 마세요!
                 mouse_event(0x0001, dx, dy, 0, 0);
+                return;
             }
 
             // 2. 키보드 제어 (스캔코드 방식 유지)
-            else if ((cmd == "KD" || cmd == "KU") && parts.Length == 2)
+            if ((cmd == "KD" || cmd == "KU") && parts.Length == 2)
             {
                 int vk = int.Parse(parts[1]);
                 uint scanCode = MapVirtualKey((uint)vk, 0);
@@ -299,25 +310,28 @@ namespace SC_StepByStep_v1
             if (cmd == "SET_SYNC" && parts.Length == 2)
             {
                 bool isChecked = bool.Parse(parts[1]);
-                this.Invoke((MethodInvoker)delegate {
-                    chkSyncMove.Checked = isChecked; // 서브 PC의 UI를 메인과 동일하게 변경
+                this.Invoke((MethodInvoker)delegate
+                {
+                    chkSyncCagoLV.Checked = isChecked; // 서브 PC의 UI를 메인과 동일하게 변경
                 });
             }
             else if (cmd == "SET_MANUAL" && parts.Length == 2)
             {
                 bool isChecked = bool.Parse(parts[1]);
-                this.Invoke((MethodInvoker)delegate {
+                this.Invoke((MethodInvoker)delegate
+                {
                     chkSubManual.Checked = isChecked;
                 });
             }
             else if (cmd == "SET_AntiKick" && parts.Length == 2)
             {
                 bool isChecked = bool.Parse(parts[1]);
-                this.Invoke((MethodInvoker)delegate {
+                this.Invoke((MethodInvoker)delegate
+                {
                     chkAntiKick.Checked = isChecked;
                 });
             }
-            else if(_isMasterRole)
+            else if (_isMasterRole)
             {
                 // ==========================================
                 // [메인 PC] 서브 PC로부터의 응답 처리
@@ -329,8 +343,8 @@ namespace SC_StepByStep_v1
                 }
             }
 
-                // 2. 기존 자동화 신호 처리 (SUB_ACTION_1, 2 등)
-                // --- 상황 A: 서브 수동 모드 (사용자 클릭 대기) ---
+            // 2. 기존 자동화 신호 처리 (SUB_ACTION_1, 2 등)
+            // --- 상황 A: 서브 수동 모드 (사용자 클릭 대기) ---
             else if (chkSubManual.Checked)
             {
                 if (msg == "SUB_ACTION_1" || msg == "SUB_ACTION_2")
@@ -348,12 +362,12 @@ namespace SC_StepByStep_v1
                 mouse_event(0x0002 | 0x0004, 0, 0, 0, 0);
                 SendCommand("SUB_READY"); // 완료 신호 회신
             }
-            else if (msg == "SUB_ACTION_2") // 두 번째 클릭 신호 (SyncMove 적용 구간)
+            else if (msg == "SUB_ACTION_2") // 두 번째 클릭 신호 (SyncCagoLV 적용 구간)
             {
                 UpdateLog("📡 2차 동작 신호 수신 (상대 이동 보정)");
 
                 // 1. 설정값 가져오기
-                bool isElevatorCorrectionEnabled = chkSubManual.Checked;
+                bool isElevatorCorrectionEnabled = chkSyncCagoLV.Checked;
                 int dist = GetInt(txtSyncDist, 5); // 이동할 픽셀 거리
 
                 if (isElevatorCorrectionEnabled)
@@ -427,7 +441,7 @@ namespace SC_StepByStep_v1
                 if (_isMasterRole && e.Button == MouseButtons.Right)
                 {
                     Point fixedPos = e.Location;
-                                        
+
                     if (_editTarget != -1)  // --- 상황 A: 개별 수정 모드 (체크박스 여부와 상관없이 작동)
                     {
                         UpdateLog($"📸 [개별 캡처] 시작 (좌표: {fixedPos.X}, {fixedPos.Y})");
@@ -479,18 +493,19 @@ namespace SC_StepByStep_v1
             // [키보드] F12, F3 등 단축키 처리
             _globalHook.KeyDown += (s, e) =>
             {
-                if (e.KeyCode == Keys.F12)
-                {
-                    _isSyncEnabled = !_isSyncEnabled;
-                    UpdateLog(_isSyncEnabled ? "▶ [F12] 동기화 시작 (ON)" : "■ [F12] 동기화 중지 (OFF)");
-                }
                 if (_isMasterRole && _isSyncEnabled)
                 {
                     // 2. 키보드 필터링 적용 (WASD, F, Shift 등 특정 키만 전송)
                     if (IsMovementKey(e.KeyCode))
                     {
-                        SendCommand($"KD|{(int)e.KeyCode}"); // KeyCode(VKey)를 보내야 수신부의 MapVirtualKey가 작동함
-                    }                    
+                        SendCommand($"KD|{(int)e.KeyCode}");
+                    }
+                }
+                // 단축키 제어 (이건 각 PC에서 독립적으로 동작하거나 마스터만 동작)
+                if (e.KeyCode == Keys.F12)
+                {
+                    _isSyncEnabled = !_isSyncEnabled;
+                    UpdateLog(_isSyncEnabled ? "▶ 동기화 시작" : "■ 동기화 중지");
                 }
                 else if (e.KeyCode == Keys.F3 && _isMasterRole)
                 {
@@ -523,6 +538,7 @@ namespace SC_StepByStep_v1
                     if (_accumulatedDX != 0 || _accumulatedDY != 0)
                     {
                         SendCommand($"MOVE|{_accumulatedDX}|{_accumulatedDY}");
+                        //UpdateLog($"[Send] MOVE|{_accumulatedDX}|{_accumulatedDY}");
 
                         // 전송 후 누적값 초기화
                         _accumulatedDX = 0;
@@ -834,7 +850,7 @@ namespace SC_StepByStep_v1
                     chkCaptureEnable.Checked = TryParseBool(l[9], false);
                     chkSoundEnable.Checked = TryParseBool(l[10], true);
                     chkAntiKick.Checked = TryParseBool(l[11], false);
-                    chkSyncMove.Checked = TryParseBool(l[12], true);
+                    chkSyncCagoLV.Checked = TryParseBool(l[12], true);
                     txtSyncDist.Text = l[13];
 
                     UpdateLog("✅ 기본 환경 설정 로드 성공");
@@ -887,7 +903,7 @@ namespace SC_StepByStep_v1
                 l[9] = chkCaptureEnable.Checked.ToString();
                 l[10] = chkSoundEnable.Checked.ToString();
                 l[11] = chkAntiKick.Checked.ToString();
-                l[12] = chkSyncMove.Checked.ToString();
+                l[12] = chkSyncCagoLV.Checked.ToString();
                 l[13] = txtSyncDist.Text;
 
                 // 좌표 저장
@@ -1116,10 +1132,10 @@ namespace SC_StepByStep_v1
             }
         }
 
-
         private void btnSaveConfig_Click(object sender, EventArgs e) => SaveSettings();
 
         #endregion
 
+       
     }
 }
