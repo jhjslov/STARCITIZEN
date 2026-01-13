@@ -288,10 +288,26 @@ namespace SC_StepByStep_v1
             // 1. MOVE 신호는 로그를 찍지 않고 최상단에서 바로 처리
             if (cmd == "MOVE" && parts.Length == 3)
             {
-                int dx = int.Parse(parts[1]);
-                int dy = int.Parse(parts[2]);
+                // 1. 원본 델타값 파싱
+                int rawDx = int.Parse(parts[1]);
+                int rawDy = int.Parse(parts[2]);
 
-                mouse_event(0x0001, dx, dy, 0, 0);
+                // 2. 텍스트박스에서 배율 가져오기 (기본값 1.0)
+                double ratioX = 1.0;
+                double ratioY = 1.0;
+                double.TryParse(txtRatioX.Text, out ratioX); // 입력값이 숫자가 아니면 0 또는 1이 됨에 주의
+                double.TryParse(txtRatioY.Text, out ratioY);
+
+                // 입력값이 비어있거나 0이면 1.0으로 안전장치
+                if (ratioX == 0) ratioX = 1.0;
+                if (ratioY == 0) ratioY = 1.0;
+
+                // 3. 배율 적용 (소수점은 버림)
+                int finalDx = (int)(rawDx * ratioX);
+                int finalDy = (int)(rawDy * ratioY);
+
+                // 4. 이동 실행 (로그 없이 즉시 실행)
+                mouse_event(0x0001, finalDx, finalDy, 0, 0);
                 return;
             }
 
@@ -521,7 +537,10 @@ namespace SC_StepByStep_v1
             {
                 if (_isMasterRole && _isSyncEnabled)
                 {
-                    SendCommand($"KU|{(int)e.KeyCode}");
+                    if (IsMovementKey(e.KeyCode))
+                    {
+                        SendCommand($"KU|{(int)e.KeyCode}");
+                    }
                 }
             };
         }
