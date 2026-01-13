@@ -1,4 +1,4 @@
-﻿namespace SC_StepByStep_v1
+namespace SC_StepByStep_v1
 {
     partial class Form1
     {
@@ -37,17 +37,16 @@
             tabControl1 = new TabControl();
             tabPage1 = new TabPage();
             lblRole = new Label();
-            btnConnTest = new Button();
             btnToggleRole = new Button();
-            btnConnectProcess = new Button();
-            txtIPInput = new TextBox();
+            btnConnect = new Button();
+            txtTargetIP = new TextBox();
             label4 = new Label();
             label3 = new Label();
-            lblMyIP = new Label();
+            txtMyIP = new Label();
             tabPage2 = new TabPage();
             chkSubManual = new CheckBox();
             txtSyncDist = new TextBox();
-            chkSyncMove = new CheckBox();
+            chkSyncCagoLV = new CheckBox();
             label16 = new Label();
             label13 = new Label();
             label15 = new Label();
@@ -89,10 +88,11 @@
             // 
             // lstLog
             // 
+            lstLog.Font = new Font("맑은 고딕", 8F, FontStyle.Regular, GraphicsUnit.Point, 129);
             lstLog.FormattingEnabled = true;
             lstLog.Location = new Point(9, 244);
             lstLog.Name = "lstLog";
-            lstLog.Size = new Size(253, 124);
+            lstLog.Size = new Size(253, 160);
             lstLog.TabIndex = 0;
             // 
             // txtRatioX
@@ -151,17 +151,16 @@
             // tabPage1
             // 
             tabPage1.Controls.Add(lblRole);
-            tabPage1.Controls.Add(btnConnTest);
             tabPage1.Controls.Add(btnToggleRole);
             tabPage1.Controls.Add(label2);
-            tabPage1.Controls.Add(btnConnectProcess);
+            tabPage1.Controls.Add(btnConnect);
             tabPage1.Controls.Add(label1);
             tabPage1.Controls.Add(txtRatioY);
             tabPage1.Controls.Add(txtRatioX);
-            tabPage1.Controls.Add(txtIPInput);
+            tabPage1.Controls.Add(txtTargetIP);
             tabPage1.Controls.Add(label4);
             tabPage1.Controls.Add(label3);
-            tabPage1.Controls.Add(lblMyIP);
+            tabPage1.Controls.Add(txtMyIP);
             tabPage1.Location = new Point(4, 24);
             tabPage1.Name = "tabPage1";
             tabPage1.Padding = new Padding(3);
@@ -173,51 +172,43 @@
             // lblRole
             // 
             lblRole.AutoSize = true;
-            lblRole.Location = new Point(188, 11);
+            lblRole.Location = new Point(160, 11);
             lblRole.Name = "lblRole";
             lblRole.Size = new Size(59, 15);
             lblRole.TabIndex = 19;
             lblRole.Text = "MODE: --";
             // 
-            // btnConnTest
-            // 
-            btnConnTest.Location = new Point(102, 133);
-            btnConnTest.Name = "btnConnTest";
-            btnConnTest.Size = new Size(75, 23);
-            btnConnTest.TabIndex = 18;
-            btnConnTest.Text = "연결테스트";
-            btnConnTest.UseVisualStyleBackColor = true;
-            // 
             // btnToggleRole
             // 
-            btnToggleRole.Location = new Point(162, 57);
+            btnToggleRole.Location = new Point(151, 57);
             btnToggleRole.Name = "btnToggleRole";
             btnToggleRole.Size = new Size(75, 23);
             btnToggleRole.TabIndex = 16;
             btnToggleRole.Text = "역할 전환";
             btnToggleRole.UseVisualStyleBackColor = true;
+            btnToggleRole.Click += btnToggleRole_Click;
             // 
-            // btnConnectProcess
+            // btnConnect
             // 
-            btnConnectProcess.Location = new Point(25, 57);
-            btnConnectProcess.Name = "btnConnectProcess";
-            btnConnectProcess.Size = new Size(110, 23);
-            btnConnectProcess.TabIndex = 15;
-            btnConnectProcess.Text = "서버시작 / 접속";
-            btnConnectProcess.UseVisualStyleBackColor = true;
-            btnConnectProcess.Click += btnConnectProcess_Click;
+            btnConnect.Location = new Point(8, 57);
+            btnConnect.Name = "btnConnect";
+            btnConnect.Size = new Size(127, 23);
+            btnConnect.TabIndex = 15;
+            btnConnect.Text = "연결 / 대기";
+            btnConnect.UseVisualStyleBackColor = true;
+            btnConnect.Click += btnConnect_Click;
             // 
-            // txtIPInput
+            // txtTargetIP
             // 
-            txtIPInput.Location = new Point(78, 28);
-            txtIPInput.Name = "txtIPInput";
-            txtIPInput.Size = new Size(100, 23);
-            txtIPInput.TabIndex = 13;
+            txtTargetIP.Location = new Point(64, 28);
+            txtTargetIP.Name = "txtTargetIP";
+            txtTargetIP.Size = new Size(100, 23);
+            txtTargetIP.TabIndex = 13;
             // 
             // label4
             // 
             label4.AutoSize = true;
-            label4.Location = new Point(22, 31);
+            label4.Location = new Point(8, 31);
             label4.Name = "label4";
             label4.Size = new Size(50, 15);
             label4.TabIndex = 12;
@@ -226,26 +217,26 @@
             // label3
             // 
             label3.AutoSize = true;
-            label3.Location = new Point(22, 11);
+            label3.Location = new Point(8, 11);
             label3.Name = "label3";
             label3.Size = new Size(34, 15);
             label3.TabIndex = 11;
             label3.Text = "MyIP";
             // 
-            // lblMyIP
+            // txtMyIP
             // 
-            lblMyIP.AutoSize = true;
-            lblMyIP.Location = new Point(78, 11);
-            lblMyIP.Name = "lblMyIP";
-            lblMyIP.Size = new Size(39, 15);
-            lblMyIP.TabIndex = 10;
-            lblMyIP.Text = "label3";
+            txtMyIP.AutoSize = true;
+            txtMyIP.Location = new Point(64, 11);
+            txtMyIP.Name = "txtMyIP";
+            txtMyIP.Size = new Size(39, 15);
+            txtMyIP.TabIndex = 10;
+            txtMyIP.Text = "label3";
             // 
             // tabPage2
             // 
             tabPage2.Controls.Add(chkSubManual);
             tabPage2.Controls.Add(txtSyncDist);
-            tabPage2.Controls.Add(chkSyncMove);
+            tabPage2.Controls.Add(chkSyncCagoLV);
             tabPage2.Controls.Add(label16);
             tabPage2.Controls.Add(label13);
             tabPage2.Controls.Add(label15);
@@ -272,30 +263,32 @@
             // chkSubManual
             // 
             chkSubManual.AutoSize = true;
+            chkSubManual.Font = new Font("맑은 고딕", 8.25F, FontStyle.Regular, GraphicsUnit.Point, 129);
             chkSubManual.Location = new Point(129, 65);
             chkSubManual.Name = "chkSubManual";
-            chkSubManual.Size = new Size(124, 19);
+            chkSubManual.Size = new Size(117, 17);
             chkSubManual.TabIndex = 25;
             chkSubManual.Text = "Sub Manual MOD";
             chkSubManual.UseVisualStyleBackColor = true;
             // 
             // txtSyncDist
             // 
-            txtSyncDist.Location = new Point(215, 80);
+            txtSyncDist.Location = new Point(220, 81);
             txtSyncDist.Name = "txtSyncDist";
-            txtSyncDist.Size = new Size(32, 23);
+            txtSyncDist.Size = new Size(29, 23);
             txtSyncDist.TabIndex = 24;
             txtSyncDist.Text = "5";
             // 
-            // chkSyncMove
+            // chkSyncCagoLV
             // 
-            chkSyncMove.AutoSize = true;
-            chkSyncMove.Location = new Point(137, 82);
-            chkSyncMove.Name = "chkSyncMove";
-            chkSyncMove.Size = new Size(82, 19);
-            chkSyncMove.TabIndex = 23;
-            chkSyncMove.Text = "SyncMove";
-            chkSyncMove.UseVisualStyleBackColor = true;
+            chkSyncCagoLV.AutoSize = true;
+            chkSyncCagoLV.Font = new Font("맑은 고딕", 8.25F, FontStyle.Regular, GraphicsUnit.Point, 129);
+            chkSyncCagoLV.Location = new Point(131, 84);
+            chkSyncCagoLV.Name = "chkSyncCagoLV";
+            chkSyncCagoLV.Size = new Size(87, 17);
+            chkSyncCagoLV.TabIndex = 23;
+            chkSyncCagoLV.Text = "SyncCagoLV";
+            chkSyncCagoLV.UseVisualStyleBackColor = true;
             // 
             // label16
             // 
@@ -513,6 +506,7 @@
             btnSaveConfig.TabIndex = 0;
             btnSaveConfig.Text = "SAVE";
             btnSaveConfig.UseVisualStyleBackColor = true;
+            btnSaveConfig.Click += btnSaveConfig_Click;
             // 
             // txtWaitConfirm
             // 
@@ -585,7 +579,7 @@
             // 
             AutoScaleDimensions = new SizeF(7F, 15F);
             AutoScaleMode = AutoScaleMode.Font;
-            ClientSize = new Size(270, 373);
+            ClientSize = new Size(270, 416);
             Controls.Add(chkAntiKick);
             Controls.Add(lblStatus);
             Controls.Add(tabControl1);
@@ -594,6 +588,7 @@
             Controls.Add(chkAlwaysOnTop);
             Name = "Form1";
             Text = "Form1";
+            Load += Form1_Load;
             tabControl1.ResumeLayout(false);
             tabPage1.ResumeLayout(false);
             tabPage1.PerformLayout();
@@ -621,16 +616,15 @@
         private TabPage tabPage2;
         private TabPage tabPage3;
         private Label label3;
-        private Label lblMyIP;
+        private Label txtMyIP;
         private CheckBox chkAlwaysOnTop;
-        private TextBox txtIPInput;
+        private TextBox txtTargetIP;
         private Label label4;
         private Button btnToggleRole;
-        private Button btnConnectProcess;
+        private Button btnConnect;
         private Label lblStatus;
         private Button btnSaveConfig;
         private TextBox txtTolerance;
-        private Button btnConnTest;
         private TextBox txtWaitNext;
         private TextBox txtWaitAction;
         private TextBox txtWaitMatch;
@@ -657,7 +651,7 @@
         private Label label15;
         private Label label16;
         private TextBox txtSyncDist;
-        private CheckBox chkSyncMove;
+        private CheckBox chkSyncCagoLV;
         private CheckBox chkSubManual;
         private Label lblRole;
     }
