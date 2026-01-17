@@ -83,7 +83,8 @@ namespace SC_StepByStep_v1
         {
             // 이제 창 핸들이 생성되었으므로 안전하게 로그를 남길 수 있습니다.
             // 1. 설정 파일 로드 (좌표, IP 등)
-            LoadSettings();           
+            LoadSettings();
+            _overlay = new OverlayForm();
 
             // 2. 후킹 및 타이머 시작
             SubscribeHooks();
@@ -431,8 +432,13 @@ namespace SC_StepByStep_v1
                 {
                     // 드래그 영역 계산 후 오버레이 폼에 전달
                     Rectangle rect = GetRect(_dragStart, e.Location);
-                    _overlay.CurrentDragRect = rect;
-                    _overlay.Invalidate();
+                    // [수정 부분] _overlay가 null이 아닐 때만 속성에 접근하도록 합니다.
+                    if (_overlay != null && !_overlay.IsDisposed)
+                    {
+                        _overlay.CurrentDragRect = rect;
+                        _overlay.Invalidate();
+                    }
+
                 }
                 if (!_isSyncEnabled || !_isMasterRole)
                 {
@@ -528,7 +534,12 @@ namespace SC_StepByStep_v1
                 {
                     _isDragging = false;
                     Rectangle finalRect = GetRect(_dragStart, e.Location);
-                    _overlay.CurrentDragRect = Rectangle.Empty;
+                    // [수정 부분] _overlay가 null이 아닐 때만 속성에 접근하도록 합니다.
+                    if (_overlay != null && !_overlay.IsDisposed)
+                    {
+                        _overlay.CurrentDragRect = Rectangle.Empty;
+                        _overlay.Invalidate();
+                    }
 
                     if (finalRect.Width > 10 && finalRect.Height > 10)
                     {
@@ -1363,11 +1374,11 @@ namespace SC_StepByStep_v1
             {
                 case 0: // ⚓ Anchor
                     _anchorImage = (Bitmap)capturedBmp.Clone();
-                    _overlay.AnchorImage = _anchorImage;
-                    _overlay.AnchorPos = rect.Location;
-                    fileName = $"Anchor_{dateStr}_{buildVer}.png";
-                    UpdateLog("⚓ 앵커 수집 완료 (가이드 활성화)");
-                    break;
+                        _overlay.AnchorImage = _anchorImage;
+                        _overlay.AnchorPos = rect.Location;
+                        fileName = $"Anchor_{dateStr}_{buildVer}.png";
+                        UpdateLog("⚓ 앵커 수집 완료 (가이드 활성화)");
+                        break;                    
                 case 1: // ⬇️ Down
                     _btnDown = new CargoButton { Pos = GetCenter(rect), Image = capturedBmp, Name = "Down" };
                     picDown.Image = (Bitmap)capturedBmp.Clone();
