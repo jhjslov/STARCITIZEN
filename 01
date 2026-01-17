@@ -1,0 +1,1407 @@
+using System;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.IO;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+using System.Diagnostics;
+using Gma.System.MouseKeyHook; // 마우스/키보드 후킹 라이브러리
+using System.Runtime.InteropServices; // WinAPI 사용
+
+namespace SC_StepByStep_v1
+{
+    public partial class Form1 : Form
+    {
+        #region [1. WinAPI 및 상수 정의]
+        // 마우스 클릭 및 키보드 입력을 강제로 발생시키기 위한 Win32 API
+        [DllImport("user32.dll")]
+        static extern void mouse_event(uint dwFlags, int dx, int dy, int dwData, int dwExtraInfo);
+        [DllImport("user32.dll")]
+        static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, int dwExtraInfo);
+        [DllImport("user32.dll")]
+        static extern uint MapVirtualKey(uint uCode, uint uMapType);
+
+        // API 상수 (DirectX 게임 호환성을 위해 스캔코드 사용)
+        const uint KEYEVENTF_SCANCODE = 0x0008;
+        const uint KEYEVENTF_KEYUP = 0x0002;
+        private const uint MOUSEEVENTF_MOVE = 0x0001;      // 마우스 이동
+        private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;  // 왼쪽 버튼 누름
+        private const uint MOUSEEVENTF_LEFTUP = 0x0004;    // 왼쪽 버튼 뗌
+
+        // 버튼 이미지와 위치를 저장할 구조체
+        public struct CargoButton { public Point Pos; public Bitmap Image; public string Name; }
+        #endregion
+
+        #region [2. 전역 변수 선언]
+
+        // --- A. 핵심 상태 제어 ---
+        private bool _isMasterRole = true;      // true: 마스터(서버), false: 보조(클라이언트)
+        private bool _isConnected = false;      // 네트워크 연결 상태
+        private bool _isSyncEnabled = false; // 캐릭터 동기화 ON/OFF 상태 저장
+        private bool _isMacroRunning = false;   // [F3] 매크로 실행 중 여부
+        private bool _isSubReady = false; // 서브 PC의 완료 신호를 체크할 변수
+        private bool _waitingForUserClick = false; // [보조 PC] 수동 클릭 대기 상태
+        private System.Windows.Forms.Timer _antiKickTimer; // 안티 킥 타이머
+        private OverlayForm _overlay; //오버레이 폼 제어
+
+        // --- B. 네트워크 객체 ---
+        private TcpListener _listener;          // 서버 리스너
+        private TcpClient _client;              // 연결된 클라이언트
+        private NetworkStream _stream;          // 데이터 통신 스트림
+
+        // --- C. 후킹 및 동기화 ---
+        private IKeyboardMouseEvents _globalHook;
+        private Point _lastSentPos = new Point(0, 0); // 마지막 전송 좌표 저장
+        private Point _lastPos;                 // 마우스 이전 위치 (델타 계산용)
+        private int _accumulatedDX = 0;
+        private int _accumulatedDY = 0;
+        private System.Windows.Forms.Timer _syncTimer; // 동기화 패킷 전송 타이머
+
+        // --- D. 매크로 및 설정 ---
+        private CargoButton _btnDown, _btnConfirm, _btnUp; // 3단계 버튼 데이터
+        private int _captureIndex = 0; //순차 캡처 인덱스 0:Anchor, 1:Down, 2:Confirm, 3:Up
+        private int _editTarget = -1;           // 개별 수정 타겟
+        private string _configPath = "config.txt";
+        private string _imgDir = "captures";
+
+        private Point _dragStart;
+        private Rectangle _dragRect;
+        private bool _isDragging = false;
+        private Bitmap _anchorImage; // 앵커 이미지 메모리 보관
+
+        #endregion
+
+        #region [3. 초기화 및 UI 제어]
+        public Form1()
+        {
+            InitializeComponent();
+        }
+        private void Form1_Load(object sender, EventArgs e)
+        {
+            // 이제 창 핸들이 생성되었으므로 안전하게 로그를 남길 수 있습니다.
+            // 1. 설정 파일 로드 (좌표, IP 등)
+            LoadSettings();           
+
+            // 2. 후킹 및 타이머 시작
+            SubscribeHooks();
+            InitSyncTimer();
+            chkSubManual.CheckedChanged += (s, e) =>
+            {
+                SendCommand($"SET_MANUAL|{chkSubManual.Checked}");
+                UpdateLog($"[설정] 서브 수동 모드: {(chkSubManual.Checked ? "ON" : "OFF")}");
+            };
+            chkSyncCagoLV.CheckedChanged += (s, e) =>
+            { // SyncMove 체크박스 이름 확인 필요
+                SendCommand($"SET_SYNC|{chkSyncCagoLV.Checked}");  // 서브 PC에게 체크 상태를 보냄 (예: SET_SYNC|True)
+                UpdateLog($"[설정] 내려놓기 보정: {(chkSyncCagoLV.Checked ? "ON" : "OFF")}");
+            };
+            chkAlwaysOnTop.CheckedChanged += (s, e) =>
+            {
+                this.TopMost = chkAlwaysOnTop.Checked;
+                UpdateLog($"📌 항상 위: {(chkAlwaysOnTop.Checked ? "설정" : "🔓 해제")}");
+            };
+            chkAntiKick.CheckedChanged += (s, e) =>
+            {
+                SendCommand($"SET_AntiKick|{chkAntiKick.Checked}");
+                UpdateLog(chkAntiKick.Checked ? "🛡️ Anti-Kick 감시 시작 (5분 주기 Enter)" : "🔓 Anti-Kick 중단");
+            };
+            chkSoundEnable.CheckedChanged += (s, e) =>
+            {
+                UpdateLog(chkSoundEnable.Checked ? "매크로 완료 Sound 설정" : "매크로 완료 Sound 해제");
+            };
+        
+            // 3. UI 초기값 설정
+            txtMyIP.Text = GetLocalIP(); // 내 IP 표시
+            UpdateRoleUI();              // 역할에 따른 UI 갱신
+            // Anti-Kick 타이머 설정 및 시작
+            _antiKickTimer = new System.Windows.Forms.Timer();
+            _antiKickTimer.Interval = 300000; // 5분 주기
+            _antiKickTimer.Tick += AntiKickTimer_Tick; // 이벤트 연결
+            _antiKickTimer.Start(); // 타이머 가동 시작
+            InitPictureBoxEvents();
+            UpdateLog("✅ 프로그램이 준비되었습니다. (v3.9.7).");
+        }
+        // 역할(마스터/보조)에 따라 UI 텍스트와 색상을 변경
+        private void UpdateRoleUI()
+        {
+            if (this.InvokeRequired) { this.Invoke(new Action(UpdateRoleUI)); return; }
+
+            // 레이블: 현재 모드 표시
+            lblRole.Text = _isMasterRole ? "MODE: MASTER (Server)" : "MODE: SUB (Client)";
+            lblRole.ForeColor = _isMasterRole ? Color.Cyan : Color.Orange;
+
+            // 버튼: 역할에 따라 '서버 시작' 또는 '접속'으로 텍스트 변경
+            btnConnect.Text = _isMasterRole ? "서버 대기 시작" : "마스터 접속";
+
+            // 상태에 따라 입력창 활성/비활성 처리
+            txtTargetIP.Enabled = !_isMasterRole; // 보조일 때만 타겟 IP 입력 가능
+        }
+
+        // [이벤트] 역할 전환 버튼 클릭
+        private void btnToggleRole_Click(object sender, EventArgs e)
+        {
+            // 연결 중이면 먼저 끊음
+            if (_isConnected) Disconnect();
+
+            _isMasterRole = !_isMasterRole; // 역할 반전
+            UpdateRoleUI();
+            UpdateLog($"🔄 역할이 변경되었습니다: {(_isMasterRole ? "MASTER" : "SUB")}");
+        }
+
+        // 로그 출력 (핸들 체크 포함)
+        private void UpdateLog(string msg)
+        {
+            if (this.IsDisposed || !this.IsHandleCreated) return;
+            this.BeginInvoke(new Action(() =>
+            {
+                lstLog.Items.Insert(0, $"[{DateTime.Now:HH:mm:ss}] {msg}");
+                if (lstLog.Items.Count > 100) lstLog.Items.RemoveAt(100);
+            }));
+        }
+        #endregion
+
+        #region [4. 네트워크 통신 로직]
+
+        // [이벤트] 연결/대기 버튼 클릭 (하나의 버튼으로 두 역할 처리)
+        private async void btnConnect_Click(object sender, EventArgs e)
+        {
+            // 이미 연결 상태라면 연결 끊기
+            if (_isConnected)
+            {
+                Disconnect();
+                return;
+            }
+
+            if (_isMasterRole)
+            {
+                // [마스터] 서버 시작 및 대기
+                try
+                {
+                    _listener = new TcpListener(IPAddress.Any, 9000);
+                    _listener.Start();
+                    UpdateLog("⏳ [SERVER] 보조 PC의 접속을 기다리는 중...");
+                    btnConnect.Text = "접속 대기 중...";
+
+                    _client = await _listener.AcceptTcpClientAsync();
+                    StartSession(); // 연결 성공 처리
+                    await Task.Delay(1500);
+                    AutoSaveIPHistory(txtTargetIP.Text);
+                }
+                catch (Exception ex) { UpdateLog($"❌ 서버 오류: {ex.Message}"); }
+            }
+            else
+            {
+                // [보조] 마스터 IP로 접속 시도
+                try
+                {
+                    _client = new TcpClient();
+                    string targetIP = txtTargetIP.Text.Trim(); // UI의 타겟 IP 입력창
+                    UpdateLog($"⏳ [CLIENT] 마스터({targetIP}) 접속 시도...");
+
+                    await _client.ConnectAsync(targetIP, 9000);
+                    StartSession(); // 연결 성공 처리
+                    AutoSaveIPHistory(txtTargetIP.Text);
+                }
+                catch (Exception ex) { UpdateLog($"❌ 접속 실패: {ex.Message}"); }
+            }
+        }
+
+        // 연결 성공 시 초기화
+        private void StartSession()
+        {
+            _stream = _client.GetStream();
+            _isConnected = true;
+            UpdateLog("✅ 네트워크 연결 성공!");
+
+            if (this.InvokeRequired) this.Invoke(new Action(() => btnConnect.Text = "연결 종료"));
+            else btnConnect.Text = "연결 종료";
+
+            ReceiveMessagesLoop(); // 수신 루프 시작
+        }
+
+        // 연결 종료 및 리소스 해제
+        private void Disconnect()
+        {
+            _isConnected = false;
+            if (_stream != null) _stream.Close();
+            if (_client != null) _client.Close();
+            if (_listener != null) _listener.Stop();
+
+            UpdateLog("🔌 연결이 종료되었습니다.");
+            UpdateRoleUI(); // 버튼 텍스트 원상복구
+        }
+
+        // 데이터 송신 (마스터 -> 보조 or 보조 -> 마스터)
+        private void SendCommand(string command)
+        {
+            FlashStatusLabel();
+
+            if (_stream != null && _client != null && _client.Connected)
+            {
+                try
+                {
+                    // 명령 끝에 개행 문자(\n)를 반드시 추가하여 데이터의 끝을 알림
+                    byte[] data = Encoding.UTF8.GetBytes(command + "\n");
+                    _stream.Write(data, 0, data.Length);
+                    _stream.Flush(); // 즉시 전송 보장
+                    if (!command.StartsWith("MOVE|"))   // [수정] MOVE 명령이 아닐 때만 로그를 출력합니다.
+                    {
+                        UpdateLog($"[Send] {command}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    UpdateLog($"❌ 전송 실패: {ex.Message}");
+                }
+            }
+        }
+
+        // 데이터 수신 루프 (비동기)
+        private async void ReceiveMessagesLoop()
+        {
+            byte[] buffer = new byte[1024];
+            while (_isConnected)
+            {
+                try
+                {
+                    int bytesRead = await _stream.ReadAsync(buffer, 0, buffer.Length);
+                    if (bytesRead == 0) break; // 연결 끊김 감지
+
+                    string msg = Encoding.UTF8.GetString(buffer, 0, bytesRead).Trim();
+                    ProcessMessage(msg); // 메시지 해석
+                }
+                catch { break; }
+            }
+            Disconnect();
+        }
+
+        // 수신된 메시지 처리
+        private async void ProcessMessage(string msg)
+        {
+            if (string.IsNullOrEmpty(msg)) return;
+            if (!msg.StartsWith("MOVE")) UpdateLog($"[Recv] {msg}");
+            string[] parts = msg.Split('|');
+            string cmd = parts[0];
+
+            // 1. MOVE 신호는 로그를 찍지 않고 최상단에서 바로 처리
+            if (cmd == "MOVE" && parts.Length == 3)
+            {
+                // 1. 원본 델타값 파싱
+                int rawDx = int.Parse(parts[1]);
+                int rawDy = int.Parse(parts[2]);
+
+                // 2. 텍스트박스에서 배율 가져오기 (기본값 1.0)
+                double ratioX = 1.0;
+                double ratioY = 1.0;
+                double.TryParse(txtRatioX.Text, out ratioX); // 입력값이 숫자가 아니면 0 또는 1이 됨에 주의
+                double.TryParse(txtRatioY.Text, out ratioY);
+
+                // 입력값이 비어있거나 0이면 1.0으로 안전장치
+                if (ratioX == 0) ratioX = 1.0;
+                if (ratioY == 0) ratioY = 1.0;
+
+                // 3. 배율 적용 (소수점은 버림)
+                int finalDx = (int)(rawDx * ratioX);
+                int finalDy = (int)(rawDy * ratioY);
+
+                // 4. 이동 실행 (로그 없이 즉시 실행)
+                mouse_event(0x0001, finalDx, finalDy, 0, 0);
+                return;
+            }
+
+            FlashStatusLabel();
+            // 2. 키보드 제어 (스캔코드 방식 유지)
+            if ((cmd == "KD" || cmd == "KU") && parts.Length == 2)
+            {
+                int vk = int.Parse(parts[1]);
+                uint scanCode = MapVirtualKey((uint)vk, 0);
+                uint flags = 0x0008; // MOUSEEVENTF_SCANCODE
+
+                if (cmd == "KU") flags |= 0x0002; // KEYEVENTF_KEYUP
+
+                // 첫 번째 인자에 vk를 넣어주는 것이 더 안정적입니다.
+                keybd_event((byte)vk, (byte)scanCode, flags, 0);
+            }
+            if (cmd == "SET_SYNC" && parts.Length == 2)
+            {
+                bool isChecked = bool.Parse(parts[1]);
+                this.Invoke((MethodInvoker)delegate
+                {
+                    chkSyncCagoLV.Checked = isChecked; // 서브 PC의 UI를 메인과 동일하게 변경
+                });
+            }
+            else if (cmd == "SET_MANUAL" && parts.Length == 2)
+            {
+                bool isChecked = bool.Parse(parts[1]);
+                this.Invoke((MethodInvoker)delegate
+                {
+                    chkSubManual.Checked = isChecked;
+                });
+            }
+            else if (cmd == "SET_AntiKick" && parts.Length == 2)
+            {
+                bool isChecked = bool.Parse(parts[1]);
+                this.Invoke((MethodInvoker)delegate
+                {
+                    chkAntiKick.Checked = isChecked;
+                });
+            }
+            else if (_isMasterRole)
+            {
+                // ==========================================
+                // [메인 PC] 서브 PC로부터의 응답 처리
+                // ==========================================
+                if (msg == "SUB_READY")
+                {
+                    _isSubReady = true;
+                    UpdateLog("✅ 서브 PC로부터 응답 수신 (다음 단계 진행 가능)");
+                }
+            }
+
+            // 2. 기존 자동화 신호 처리 (SUB_ACTION_1, 2 등)
+            // --- 상황 A: 서브 수동 모드 (사용자 클릭 대기) ---
+            else if (chkSubManual.Checked)
+            {
+                if (msg == "SUB_ACTION_1" || msg == "SUB_ACTION_2")
+                {
+                    UpdateLog($"📥 [수동 모드] 메인 신호({msg}) 수신. 화면을 직접 클릭하세요!");
+                    _waitingForUserClick = true;
+                    return; // 아래의 자동 실행 로직을 타지 않도록 종료
+                }
+            }
+            // --- 상황 B: 서브 자동 모드 (기존 매크로 실행) ---
+            if (msg == "SUB_ACTION_1") // 첫 번째 클릭 신호
+            {
+                UpdateLog("📡 1차 클릭 신호 수신");
+                // 첫 번째 클릭은 평소대로 (SyncMove 미적용)
+                mouse_event(0x0002 | 0x0004, 0, 0, 0, 0);
+                SendCommand("SUB_READY"); // 완료 신호 회신
+            }
+            else if (msg == "SUB_ACTION_2") // 두 번째 클릭 신호 (SyncCagoLV 적용 구간)
+            {
+                UpdateLog("📡 2차 동작 신호 수신 (상대 이동 보정)");
+
+                // 1. 설정값 가져오기
+                bool isElevatorCorrectionEnabled = chkSyncCagoLV.Checked;
+                int dist = GetInt(txtSyncDist, 5); // 이동할 픽셀 거리
+
+                if (isElevatorCorrectionEnabled)
+                {
+                    // [핵심] 0x0001 플래그는 현재 위치에서 dx, dy만큼 '이동'시킵니다.
+                    // mouse_event(dwFlags, dx, dy, dwData, dwExtraInfo)
+                    UpdateLog($"🖱️ 마우스 {dist}px 하강 이동");
+                    mouse_event(0x0001, 0, dist, 0, 0);
+
+                    // 이동 후 게임이 인식할 수 있도록 아주 짧은 물리적 대기시간 부여
+                    await Task.Delay(500);
+                }
+
+                // 2. 실제 클릭 실행
+                mouse_event(0x0002 | 0x0004, 0, 0, 0, 0);
+
+                // 3. 클릭 후 상승 (200ms 대기 후)
+                if (isElevatorCorrectionEnabled)
+                {
+                    // 3. 사용자 요청: 클릭 후 200ms 대기
+                    await Task.Delay(500);
+
+                    // 4. 다시 원래 위치로 상승 이동
+                    UpdateLog($"🖱️ 마우스 {dist}px 상승 복귀");
+                    mouse_event(0x0001, 0, -dist, 0, 0);
+                }
+
+                SendCommand("SUB_READY"); // 완료 신호 회신
+                UpdateLog("✅ 2차 클릭 및 싱크 보정 완료");
+            }
+        }
+        #endregion
+
+        #region [5. 입력 후킹 (Mouse/Keyboard Hook)]
+        private void SubscribeHooks()
+        {
+            _globalHook = Hook.GlobalEvents();
+
+            // [마우스 이동] 동기화 ON & 마스터일 때만 동작
+            _globalHook.MouseMove += (s, e) =>
+            {
+                if (_isDragging)
+                {
+                    // 드래그 영역 계산 후 오버레이 폼에 전달
+                    Rectangle rect = GetRect(_dragStart, e.Location);
+                    _overlay.CurrentDragRect = rect;
+                    _overlay.Invalidate();
+                }
+                if (!_isSyncEnabled || !_isMasterRole)
+                {
+                    _lastPos = e.Location;
+                    return;
+                }
+
+                // 전송하지 않고 값만 누적
+                _accumulatedDX += e.X - _lastPos.X;
+                _accumulatedDY += e.Y - _lastPos.Y;
+
+                _lastPos = e.Location;
+            };
+
+            // [마우스 클릭]
+            _globalHook.MouseDown += async (s, e) =>
+            {
+                // A. 서브 PC 수동 클릭 모드
+                if (!_isMasterRole && chkSubManual.Checked && _waitingForUserClick)
+                {
+                    if (e.Button == MouseButtons.Left)
+                    {
+                        _waitingForUserClick = false;
+                        UpdateLog("🖱️ [보조] 클릭 완료 -> 마스터에 신호 전송");
+                        SendCommand("SUB_READY");
+                    }
+                    return;
+                }
+
+                // B. 마스터 PC 드래그 및 캡처 시작 (왼쪽 버튼)
+                if (_isMasterRole && e.Button == MouseButtons.Left && chkCaptureEnable.Checked)
+                {
+                    _dragStart = e.Location;
+                    _isDragging = true;
+                    return; // 드래그 시작 시 다른 로직 중단
+                }
+
+                // B-2. 마스터 PC 좌표 보정 (우클릭) - 기존 로직에 오버레이 연동 추가
+                if (_isMasterRole && e.Button == MouseButtons.Right)
+                {
+                    Point fixedPos = e.Location;
+                    if (_editTarget != -1)  // --- 상황 A: 개별 수정 모드 (체크박스 여부와 상관없이 작동)
+                    {
+                        
+                        UpdateLog($"📸 [개별 캡처] 시작 (좌표: {fixedPos.X}, {fixedPos.Y})");
+                        Bitmap avgCap = await CaptureAverageImage(fixedPos);
+
+                        if (_editTarget == 0)
+                        {
+                            _btnDown = new CargoButton { Pos = fixedPos, Image = avgCap, Name = "Down" };
+                            picDown.Image = (Bitmap)avgCap.Clone();
+                        }
+                        else if (_editTarget == 1)
+                        {
+                            _btnConfirm = new CargoButton { Pos = fixedPos, Image = avgCap, Name = "Confirm" };
+                            picConfirm.Image = (Bitmap)avgCap.Clone();
+                        }
+                        else if (_editTarget == 2)
+                        {
+                            _btnUp = new CargoButton { Pos = fixedPos, Image = avgCap, Name = "Up" };
+                            picUp.Image = (Bitmap)avgCap.Clone();
+                        }
+
+                        _editTarget = -1; // 수정 모드 초기화
+                        UpdateLog("✅ 개별 버튼 수정 완료 (저장 버튼을 눌러 확정하세요)");
+                        return;
+                    }
+
+
+                    if (chkCaptureEnable.Checked) // --- 상황 B: 일반 순차 캡처 모드 (체크박스 켜져 있을 때만)
+                    {
+                        Point currentPos = e.Location;
+                        Bitmap bmp = await CaptureAverageImage(currentPos); // 10회 평균 캡처
+
+                        // 개별 수정 모드
+                        if (_editTarget != -1)
+                        {
+                            UpdateTargetButton(_editTarget, currentPos, bmp);
+                            _editTarget = -1;
+                        }
+                        // 순차 캡처 모드
+                        else
+                        {
+                            UpdateTargetButton(_captureIndex, currentPos, bmp);
+                            _captureIndex = (_captureIndex + 1) % 3; // 0->1->2 순환
+                        }
+                    }
+                }
+            };
+
+            _globalHook.MouseUp += async (s, e) => {
+                if (_isDragging && e.Button == MouseButtons.Left)
+                {
+                    _isDragging = false;
+                    Rectangle finalRect = GetRect(_dragStart, e.Location);
+                    _overlay.CurrentDragRect = Rectangle.Empty;
+
+                    if (finalRect.Width > 10 && finalRect.Height > 10)
+                    {
+                        Bitmap cap = CaptureRectImage(finalRect);
+                        await ProcessCapturedItem(cap, finalRect); // 0~3단계 순차 저장
+                    }
+                }
+            };
+
+            // [키보드] F12, F3 등 단축키 처리
+            _globalHook.KeyDown += (s, e) =>
+            {
+                if (_isMasterRole && _isSyncEnabled)
+                {
+                    // 2. 키보드 필터링 적용 (WASD, F, Shift 등 특정 키만 전송)
+                    if (IsMovementKey(e.KeyCode))
+                    {
+                        SendCommand($"KD|{(int)e.KeyCode}");
+                    }
+                }
+                // 단축키 제어 (이건 각 PC에서 독립적으로 동작하거나 마스터만 동작)
+                if (e.KeyCode == Keys.F12)
+                {
+                    _isSyncEnabled = !_isSyncEnabled;
+                    UpdateLog(_isSyncEnabled ? "▶ 동기화 시작" : "■ 동기화 중지");
+                }
+                else if (e.KeyCode == Keys.F3 && _isMasterRole)
+                {
+                    if (!_isMacroRunning) StartCargoAutomation();
+                    else
+                    {
+                        _isMacroRunning = false;
+                        UpdateLog("🛑 [F3] 사용자에 의한 매크로 중단");
+                    }
+                }
+            };
+            _globalHook.KeyUp += (s, e) =>
+            {
+                if (_isMasterRole && _isSyncEnabled)
+                {
+                    if (IsMovementKey(e.KeyCode))
+                    {
+                        SendCommand($"KU|{(int)e.KeyCode}");
+                    }
+                }
+            };
+        }
+
+        // 동기화 타이머 (너무 잦은 전송 방지)
+        private void InitSyncTimer()
+        {
+            _syncTimer = new System.Windows.Forms.Timer();
+            _syncTimer.Interval = 80; // 10ms 설정
+            _syncTimer.Tick += (s, e) => {
+                if (_isMasterRole && _isSyncEnabled)
+                {
+                    // 누적된 값이 있을 때만 전송
+                    if (_accumulatedDX != 0 || _accumulatedDY != 0)
+                    {
+                        SendCommand($"MOVE|{_accumulatedDX}|{_accumulatedDY}");
+                        //UpdateLog($"[Send] MOVE|{_accumulatedDX}|{_accumulatedDY}");
+
+                        // 전송 후 누적값 초기화
+                        _accumulatedDX = 0;
+                        _accumulatedDY = 0;
+                    }
+                }
+            };
+            _syncTimer.Start();
+        }
+        #endregion
+
+        #region [6. 매크로 및 이미지 처리]
+        private async void StartCargoAutomation()
+        {
+            if (_btnDown.Image == null || _btnConfirm.Image == null || _btnUp.Image == null)
+            {
+                UpdateLog("❌ 오류: 버튼 3종 이미지가 없습니다.");
+                return;
+            }
+
+            try
+            {
+                _isMacroRunning = true;
+                int totalRepeat = GetInt(txtRepeat, 1);
+                UpdateLog($"▶ 매크로 시작 (총 {totalRepeat}회 진행)");
+
+                for (int i = 1; i <= totalRepeat && _isMacroRunning; i++)
+                {
+                    UpdateLog($"--- {i} / {totalRepeat} 회차 진행 중 ---");
+
+                    // 1. CargoDown 단계
+                    if (!await WaitAndClick(_btnDown, "Down", GetInt(txtWaitMatch, 5000))) break;
+                    await Task.Delay(500);
+
+                    // 2. Confirm 인식 단계 (이전 코드의 정밀 로직 유지)
+                    await Task.Delay(GetInt(txtWaitConfirm, 1000));
+                    Cursor.Position = _btnConfirm.Pos;
+                    if (!await WaitAndMatchOnly(_btnConfirm, "Confirm", GetInt(txtWaitMatch, 5000))) break;
+
+                    // 3. 서브 PC 1차 동작 요청 (클릭 지시)
+                    _isSubReady = false;
+                    SendCommand("SUB_ACTION_1"); // 보조 PC에 동작 신호 송신
+                    string modeText = chkSubManual.Checked ? "수동 클릭" : "자동 동작";  // 디자인의 chkSubManual이 체크되어 있다면 로그를 다르게 표시
+                    UpdateLog("📡 서브 PC 1차 동작 요청 중...");
+
+                    // [타임아웃 적용] 서브 PC 응답 대기
+                    if (!await WaitForSubResponse(5000))
+                    {
+                        UpdateLog("🛑 서브 응답 없음: 매크로를 강제 종료합니다.");
+                        break;
+                    }
+
+                    // 마스터 본인도 클릭 수행 (이전 코드 로직)
+                    await Task.Delay(GetInt(txtWaitClick, 500));
+                    mouse_event(0x0002 | 0x0004, 0, 0, 0, 0);
+                    UpdateLog("🖱️ 마스터 클릭 완료");
+
+                    // 4. CargoUp 단계 (txtWaitUp 연결)
+                    int waitUp = GetInt(txtWaitUp, 7800);
+                    UpdateLog($"⏳ Up 대기: {waitUp}ms");
+                    await Task.Delay(waitUp);
+                    if (!await WaitAndClick(_btnUp, "Up", GetInt(txtWaitMatch, 5000))) break;
+
+                    // 5. ESC 단계 (txtWaitEsc 연결)
+                    int waitEsc = GetInt(txtWaitEsc, 7500);
+                    await SendKeyScan(0x01, 150); // ESC 스캔코드
+                    UpdateLog($"⌨️ ESC 입력 후 {waitEsc}ms 대기...");
+                    await Task.Delay(waitEsc);
+
+                    // 서브 PC 2차 동작 요청
+                    _isSubReady = false;
+                    SendCommand("SUB_ACTION_2");
+                    UpdateLog("📡 서브 PC 2차 동작 요청 중...");
+
+                    if (!await WaitForSubResponse(5000))
+                    {
+                        UpdateLog("🛑 서브 2차 응답 없음: 종료합니다.");
+                        break;
+                    }
+
+                    // 6. 마무리 동작 (txtWaitAction 연결)
+                    int waitAction = GetInt(txtWaitAction, 500); // 디자인의 'Wait F' 값
+                    UpdateLog($"⌨️ 마무리 F 키 입력 (대기: {waitAction}ms)");
+                    await Task.Delay(waitAction);
+                    await SendKeyScan(0x21, 100); // F키
+                    await Task.Delay(200);        // 연타 사이 간격
+                    await SendKeyScan(0x21, 100);
+                    // 다음 회차 대기
+                    int nextWait = GetInt(txtWaitNext, 2000);
+                    UpdateLog($"회차 종료. {nextWait}ms 후 다음 회차 시작...");
+                    await Task.Delay(nextWait);
+                }
+            }
+            catch (Exception ex) { UpdateLog($"❌ 에러 발생: {ex.Message}"); }
+            finally
+            {
+                _isMacroRunning = false;
+                UpdateLog("🏁 모든 매크로 시퀀스 종료");
+                if (chkSoundEnable.Checked) System.Media.SystemSounds.Asterisk.Play();
+            }
+        }
+
+        // 서브 PC 응답 대기 (타임아웃 포함)
+        private async Task<bool> WaitForSubResponse(int timeoutMs)
+        {
+            Stopwatch sw = Stopwatch.StartNew();
+            while (!_isSubReady)
+            {
+                if (!_isMacroRunning || sw.ElapsedMilliseconds > timeoutMs) return false;
+                await Task.Delay(100);
+            }
+            return true;
+        }
+
+        // [헬퍼] 클릭 없이 인식만 하는 함수 (Confirm 단계용)
+        private async Task<bool> WaitAndMatchOnly(CargoButton btn, string name, int timeout)
+        {
+            Stopwatch sw = Stopwatch.StartNew();
+            UpdateLog($"🔍 Confirm 인식 대기 중... ({timeout}ms)");
+
+            while (sw.ElapsedMilliseconds < timeout)
+            {
+                if (!_isMacroRunning) return false;
+
+                // 사용자님이 제안하신 최적화된 스캔 방식 사용
+                if (SearchImageInRange(btn))
+                {
+                    UpdateLog($"✅ Confirm 포착됨");
+                    return true;
+                }
+                await Task.Delay(200);
+            }
+
+            UpdateLog($"❌ [{name}] 인식 실패 (타임아웃)");
+            return false;
+        }
+
+        // 이미지 서칭 및 클릭 함수
+        private async Task<bool> WaitAndClick(CargoButton btn, string stepName, int timeout)
+        {
+            Stopwatch sw = Stopwatch.StartNew();
+            UpdateLog($"⏳ [{stepName}] 대기 중... (제한시간: {timeout}ms)");
+
+            // 1. 타겟 좌표로 마우스 이동
+            Cursor.Position = btn.Pos;
+            await Task.Delay(200);
+
+            // 2. 시간 내에 이미지가 나타날 때까지 반복 확인
+            while (sw.ElapsedMilliseconds < timeout)
+            {
+                if (!_isMacroRunning) return false;
+
+                if (SearchImageInRange(btn)) // 이미지 인식 성공 시
+                {
+                    // 클릭 이벤트 발생
+                    mouse_event(0x0002 | 0x0004, 0, 0, 0, 0);
+                    UpdateLog($"🎯 [{stepName}] 인식 성공 및 클릭 완료");
+                    return true;
+                }
+                await Task.Delay(200); // CPU 부하 방지를 위한 미세 대기
+            }
+
+            UpdateLog($"❌ [{stepName}] 인식 실패 (타임아웃)");
+            return false;
+        }
+
+        /// <summary>
+        /// 지정된 좌표 주변 범위를 탐색하여 이미지가 일치하는지 확인합니다.
+        /// </summary>
+        private bool SearchImageInRange(CargoButton btn)
+        {
+            if (btn.Image == null) return false;
+
+            int range = 3;
+            int scanSize = 10 + (range * 2); // 10x10 이미지 + 주변 6픽셀 여유 = 16x16
+
+            using (Bitmap bigScreen = new Bitmap(scanSize, scanSize))
+            {
+                using (Graphics g = Graphics.FromImage(bigScreen))
+                {
+                    // 캡처 시작점 계산 (이미지의 정중앙 기준 오프셋 적용)
+                    int startX = btn.Pos.X - 5 - range;
+                    int startY = btn.Pos.Y - 5 - range;
+
+                    if (startX < 0 || startY < 0) return false;
+
+                    // 핵심: 단 한 번만 화면을 캡처함
+                    g.CopyFromScreen(startX, startY, 0, 0, new Size(scanSize, scanSize));
+                }
+
+                // 캡처된 bigScreen 내에서 0~6픽셀씩 이동하며 비교
+                for (int ox = 0; ox <= range * 2; ox++)
+                {
+                    for (int oy = 0; oy <= range * 2; oy++)
+                    {
+                        // 메모리 내 비트맵끼리 비교하는 함수 호출
+                        if (IsMatchAtDeep(btn.Image, bigScreen, ox, oy)) return true;
+                    }
+                }
+            }
+            return false;
+        }
+        private bool IsMatchAtDeep(Bitmap target, Bitmap screenPart, int offsetX, int offsetY)
+        {
+            // 10x10 픽셀 비교 루프
+            for (int x = 0; x < 10; x++)
+            {
+                for (int y = 0; y < 10; y++)
+                {
+                    Color c1 = target.GetPixel(x, y);
+                    Color c2 = screenPart.GetPixel(x + offsetX, y + offsetY);
+
+                    // 미세한 색상 차이(RGB 합계 30 이하)는 동일 픽셀로 간주하여 인식률 향상
+                    if (Math.Abs(c1.R - c2.R) > 30 || Math.Abs(c1.G - c2.G) > 30 || Math.Abs(c1.B - c2.B) > 30)
+                        return false;
+                }
+            }
+            return true;
+        }
+
+        // 평균 캡처 (노이즈 제거용)
+        private async Task<Bitmap> CaptureAverageImage(Point p)
+        {
+            // 구현 내용 생략 (기존 코드 유지) - 필요시 이전 코드 참조
+            // 간단하게 1장 캡처로 대체하거나 이전의 평균 로직 사용
+            Bitmap bmp = new Bitmap(10, 10);
+            using (Graphics g = Graphics.FromImage(bmp))
+                g.CopyFromScreen(p.X - 5, p.Y - 5, 0, 0, new Size(10, 10));
+            return bmp;
+        }
+        #endregion
+
+        #region [7. 기타 유틸리티]
+
+        // 버튼 업데이트 헬퍼
+        private void UpdateTargetButton(int idx, Point p, Bitmap b)
+        {
+            if (idx == 0) { _btnDown = new CargoButton { Pos = p, Image = b }; picDown.Image = (Bitmap)b.Clone(); }
+            else if (idx == 1) { _btnConfirm = new CargoButton { Pos = p, Image = b }; picConfirm.Image = (Bitmap)b.Clone(); }
+            else if (idx == 2) { _btnUp = new CargoButton { Pos = p, Image = b }; picUp.Image = (Bitmap)b.Clone(); }
+            UpdateLog($"📸 버튼 설정 완료: {idx + 1}번");
+        }
+
+        // 내 로컬 IP 가져오기
+        private string GetLocalIP()
+        {
+            try
+            {
+                using (Socket s = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, 0))
+                {
+                    s.Connect("8.8.8.8", 65530);
+                    return (s.LocalEndPoint as IPEndPoint).Address.ToString();
+                }
+            }
+            catch { return "127.0.0.1"; }
+        }
+
+        // 폼 종료 시 리소스 정리
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            _globalHook?.Dispose();
+            Disconnect();
+            base.OnFormClosing(e);
+        }
+
+        // 빈 설정 로드/저장 함수 (필요시 내용 채워넣기)
+
+        private void LoadSettings()
+        {
+            UpdateLog("📂 설정을 로드하는 중...");
+
+            if (!File.Exists(_configPath))
+            {
+                UpdateLog("⚠️ 설정 파일(config.txt)이 없습니다. 기본값을 사용합니다.");
+                return;
+            }
+
+            try
+            {
+                string[] l = File.ReadAllLines(_configPath);
+                string myIP = GetLocalIP();
+                UpdateLog($"📄 파일 읽기 완료: 총 {l.Length}라인 확인됨.");
+
+                // 1. 상단 3줄에서 IP 매칭 (0, 1, 2번 라인)
+                bool matched = false;
+                for (int i = 0; i < 3; i++)
+                {
+                    if (i >= l.Length) break;
+                    string[] parts = l[i].Split('|');
+                    if (parts.Length == 2 && parts[0] == myIP && parts[1] != "EMPTY")
+                    {
+                        txtTargetIP.Text = parts[1];
+                        matched = true; break;
+                    }
+                }
+                if (!matched) txtTargetIP.Clear();
+
+                // 2. 나머지 설정 로드 (인덱스 3부터 시작)
+                if (l.Length >= 15)
+                {
+                    // 텍스트 필드 로드
+                    txtRatioX.Text = l[3];
+                    txtRatioY.Text = l[4];
+                    txtRepeat.Text = l[5];
+
+                    // 체크박스 안전하게 파싱 (에러 방지용)
+                    chkAlwaysOnTop.Checked = TryParseBool(l[6], false);
+                    this.TopMost = chkAlwaysOnTop.Checked;
+
+                    // 시간 및 거리 설정
+                    txtWaitMatch.Text = l[7];
+                    txtWaitAction.Text = l[8];
+                    txtWaitNext.Text = l[9];
+
+                    // 기타 옵션
+                    chkCaptureEnable.Checked = TryParseBool(l[10], false);
+                    chkSoundEnable.Checked = TryParseBool(l[11], true);
+                    chkAntiKick.Checked = TryParseBool(l[12], false);
+                    chkSyncCagoLV.Checked = TryParseBool(l[13], true);
+                    txtSyncDist.Text = l[14];
+
+                    UpdateLog("✅ 기본 환경 설정 로드 성공");
+                }
+                else
+                {
+                    UpdateLog("⚠️ 설정 파일 형식이 올바르지 않습니다. (라인 부족)");
+                }
+
+                // 2. 17줄 이상이면 좌표 및 이미지 복구
+                if (l.Length >= 18)
+                {
+                    try
+                    {
+                        _btnDown.Pos = StringToPoint(l[14]);
+                        _btnConfirm.Pos = StringToPoint(l[15]);
+                        _btnUp.Pos = StringToPoint(l[16]);
+
+                        _btnDown.Image = LoadImageFile("cap_down.png", picDown);
+                        _btnConfirm.Image = LoadImageFile("cap_confirm.png", picConfirm);
+                        _btnUp.Image = LoadImageFile("cap_up.png", picUp);
+
+                        UpdateLog("🖼️ 버튼 좌표 및 이미지 복구 완료");
+                    }
+                    catch
+                    {
+                        UpdateLog("⚠️ 좌표/이미지 데이터 복구 중 오류 발생");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                UpdateLog($"❌ 설정 로드 중 치명적 오류: {ex.Message}");
+            }
+        }
+
+        private void SaveSettings()
+        {
+            try
+            {
+                // 1. 기존 파일 내용을 읽어 IP 이력 3줄을 보존함
+                string[] currentFile = File.Exists(_configPath) ? File.ReadAllLines(_configPath) : new string[3];
+                List<string> newConfig = new List<string>();
+
+                // 상단 3줄(IP 이력) 그대로 복사
+                for (int i = 0; i < 3; i++)
+                {
+                    newConfig.Add(i < currentFile.Length ? currentFile[i] : "EMPTY|EMPTY");
+                }
+
+                // 2. 그 아래에 현재 UI 설정값들 추가 (인덱스 3부터 시작)
+                newConfig.Add(txtRatioX.Text);       // index 3
+                newConfig.Add(txtRatioY.Text);       // index 4
+                newConfig.Add(txtRepeat.Text);       // index 5
+                newConfig.Add(chkAlwaysOnTop.Checked.ToString()); // 6
+                newConfig.Add(txtWaitMatch.Text);    // 7
+                newConfig.Add(txtWaitAction.Text);   // 8
+                newConfig.Add(txtWaitNext.Text);     // 9
+                newConfig.Add(chkCaptureEnable.Checked.ToString()); // 10
+                newConfig.Add(chkSoundEnable.Checked.ToString());   // 11
+                newConfig.Add(chkAntiKick.Checked.ToString());      // 12
+                newConfig.Add(chkSyncCagoLV.Checked.ToString());    // 13
+                newConfig.Add(txtSyncDist.Text);     // 14
+                newConfig.Add($"{_btnDown.Pos.X},{_btnDown.Pos.Y}");    // 15
+                newConfig.Add($"{_btnConfirm.Pos.X},{_btnConfirm.Pos.Y}"); // 16
+                newConfig.Add($"{_btnUp.Pos.X},{_btnUp.Pos.Y}");       // 17
+
+                File.WriteAllLines(_configPath, newConfig);
+                SaveImages();
+                UpdateLog("💾 설정 및 이미지 저장 완료");
+            }
+            catch (Exception ex) { UpdateLog($"❌ 저장 실패: {ex.Message}"); }
+        }
+
+        /// <summary>
+        /// 현재 PictureBox에 표시된 캡처 이미지들을 지정된 폴더에 PNG 파일로 저장합니다.
+        /// </summary>
+        private void SaveImages()
+        {
+            try
+            {
+                // 1. 저장 디렉토리가 없으면 생성
+                if (!Directory.Exists(_imgDir))
+                {
+                    Directory.CreateDirectory(_imgDir);
+                    UpdateLog($"📁 이미지 저장 폴더 생성됨: {_imgDir}");
+                }
+
+                // 2. 각 이미지를 안전하게 저장 (캡처 데이터가 있을 때만)
+                SaveSingleImage(picDown.Image, "cap_down.png");
+                SaveSingleImage(picConfirm.Image, "cap_confirm.png");
+                SaveSingleImage(picUp.Image, "cap_up.png");
+
+                UpdateLog("💾 모든 캡처 이미지 저장 완료.");
+            }
+            catch (Exception ex)
+            {
+                UpdateLog($"❌ 이미지 저장 실패: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 개별 이미지를 파일로 저장하는 헬퍼 함수
+        /// </summary>
+        private void SaveSingleImage(Image img, string fileName)
+        {
+            if (img == null) return;
+
+            string fullPath = Path.Combine(_imgDir, fileName);
+
+            try
+            {
+                // 파일이 이미 존재한다면 교체하기 위해 새 비트맵으로 복사 후 저장
+                // (기존 파일이 로드되어 사용 중인 경우를 대비)
+                using (Bitmap bmpToSave = new Bitmap(img))
+                {
+                    bmpToSave.Save(fullPath, ImageFormat.Png);
+                }
+            }
+            catch (IOException)
+            {
+                // 파일이 다른 프로세스에 의해 사용 중일 때의 예외 처리
+                UpdateLog($"⚠️ 파일 사용 중으로 저장 불가: {fileName}");
+            }
+        }
+
+        // 이미지 로드 (파일 잠금 방지)
+        private Bitmap LoadImageFile(string fn, PictureBox pb)
+        {
+            string p = Path.Combine(_imgDir, fn);
+            if (!File.Exists(p)) return null;
+            try
+            {
+                using (var temp = new Bitmap(p))
+                {
+                    Bitmap bmp = new Bitmap(temp);
+                    pb.Image = bmp;
+                    return bmp;
+                }
+            }
+            catch { return null; }
+        }
+        /// "X,Y" 형식의 문자열을 Point 객체로 변환합니다. 변환 실패 시 0,0을 반환합니다.
+        private Point StringToPoint(string s)
+        {
+            // 1. 빈 문자열 체크
+            if (string.IsNullOrWhiteSpace(s)) return new Point(0, 0);
+
+            try
+            {
+                string[] parts = s.Split(',');
+
+                // 2. 형식이 올바른지 확인 (X와 Y 두 개가 있어야 함)
+                if (parts.Length >= 2)
+                {
+                    // 3. 숫자로 안전하게 변환 시도
+                    bool successX = int.TryParse(parts[0].Trim(), out int x);
+                    bool successY = int.TryParse(parts[1].Trim(), out int y);
+
+                    if (successX && successY)
+                    {
+                        return new Point(x, y);
+                    }
+                }
+
+                // 형식이 틀린 경우 로그 출력
+                UpdateLog($"⚠️ 좌표 변환 실패 (잘못된 형식): {s}");
+            }
+            catch (Exception ex)
+            {
+                UpdateLog($"❌ StringToPoint 오류: {ex.Message}");
+            }
+
+            return new Point(0, 0); // 실패 시 기본 좌표 반환
+        }
+        private bool TryParseBool(string input, bool defaultValue)
+        {
+            return bool.TryParse(input, out bool result) ? result : defaultValue;
+        }
+
+        /// 상태 표시 라벨을 잠시 녹색으로 반짝이게 하여 동작 여부를 시각화합니다.
+        private void FlashStatusLabel()
+        {
+            // 창 핸들이 없거나 폼이 닫히는 중이면 실행하지 않음 (에러 방지)
+            if (this.IsDisposed || !this.IsHandleCreated) return;
+
+            try
+            {
+                this.BeginInvoke(new Action(() =>
+                {
+                    // 1. 강조색으로 변경 (녹색)
+                    lblStatus.BackColor = Color.Lime;
+                    lblStatus.ForeColor = Color.Black; // 글자색도 명확하게 변경
+
+                    // 2. 타이머를 생성하여 100ms 후에 원래대로 복구
+                    var flashTimer = new System.Windows.Forms.Timer { Interval = 100 };
+                    flashTimer.Tick += (s, e) =>
+                    {
+                        // 원래 투명(또는 부모 배경색)으로 복구
+                        lblStatus.BackColor = Color.Transparent;
+                        lblStatus.ForeColor = Color.White; // 기존 글자색으로 (사용자 설정에 맞게 수정)
+
+                        flashTimer.Stop();
+                        flashTimer.Dispose();
+                    };
+                    flashTimer.Start();
+                }));
+            }
+            catch (Exception ex)
+            {
+                // UI 스레드 에러 발생 시 디버그 출력
+                Debug.WriteLine($"FlashStatusLabel Error: {ex.Message}");
+            }
+        }
+
+        private async Task SendKeyScan(byte sc, int delay = 100)
+        {
+            keybd_event(0, sc, KEYEVENTF_SCANCODE, 0);
+            await Task.Delay(delay);
+            keybd_event(0, sc, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0);
+        }
+        // UI 숫자 읽기
+        private int GetInt(TextBox t, int def)
+        {
+            if (t == null) return def; // 컨트롤이 디자인에서 삭제되었을 경우 방어
+            return int.TryParse(t.Text, out int r) ? r : def;
+        }
+        private async void AntiKickTimer_Tick(object sender, EventArgs e)
+        {
+            // 체크박스가 켜져 있을 때만 작동
+            if (chkAntiKick.Checked)
+            {
+                UpdateLog("🛡️ Anti-Kick: 마우스 미세 이동 실행");
+
+                // 1. 오른쪽으로 1픽셀 이동 (MOUSEEVENTF_MOVE = 0x0001)
+                mouse_event(0x0001, 1, 0, 0, 0);
+                await Task.Delay(100);
+
+                // 2. 왼쪽으로 다시 1픽셀 이동하여 원위치
+                mouse_event(0x0001, -1, 0, 0, 0);
+
+                // 필요하다면 아주 미세한 클릭을 추가할 수도 있으나, 
+                // 움직임만으로도 대부분의 Anti-Kick은 방지됩니다.
+            }
+        }
+
+        private double GetDouble(TextBox txt, double defaultValue)
+        {
+            return double.TryParse(txt.Text, out double result) ? result : defaultValue;
+        }
+        private void InitPictureBoxEvents()
+        {
+            // 이미지 박스를 클릭하면 "준비 상태"가 됩니다.
+            picDown.Click += (s, e) =>
+            {
+                _editTarget = 0;
+                UpdateLog("🎯 [Down] 수정 대기 중... 게임 화면 위에서 우클릭하세요.");
+            };
+            picConfirm.Click += (s, e) =>
+            {
+                _editTarget = 1;
+                UpdateLog("🎯 [Confirm] 수정 대기 중... 게임 화면 위에서 우클릭하세요.");
+            };
+            picUp.Click += (s, e) =>
+            {
+                _editTarget = 2;
+                UpdateLog("🎯 [Up] 수정 대기 중... 게임 화면 위에서 우클릭하세요.");
+            };
+        }
+        private bool IsMovementKey(Keys key)
+        {
+            switch (key)
+            {
+                case Keys.W:
+                case Keys.A:
+                case Keys.S:
+                case Keys.D:
+                case Keys.F:      // 상호작용
+                case Keys.LShiftKey:
+                case Keys.ShiftKey:
+                case Keys.Space:  // 점프/상승
+                case Keys.LControlKey: // 하강
+                    return true;
+                default:
+                    return false;
+            }
+        }
+        private void AutoSaveIPHistory(string targetIP) //최근 점속 성공 IP 자동 저장
+        {
+            try
+            {
+                string myIP = GetLocalIP();
+                string currentPair = $"{myIP}|{targetIP}";
+
+                // 1. 기존 파일의 모든 내용을 읽어옴
+                List<string> allLines = File.Exists(_configPath)
+                    ? File.ReadAllLines(_configPath).ToList()
+                    : new List<string>();
+
+                // 2. 현재 파일에서 기존 IP 이력(상단 3줄) 추출 및 정리
+                List<string> ipPairs = new List<string>();
+                for (int i = 0; i < Math.Min(3, allLines.Count); i++)
+                {
+                    if (allLines[i].Contains("|")) ipPairs.Add(allLines[i]);
+                }
+
+                // 3. 현재 접속 성공한 쌍을 최상단으로 (중복 제거)
+                ipPairs.Remove(currentPair);
+                ipPairs.Insert(0, currentPair);
+                if (ipPairs.Count > 3) ipPairs = ipPairs.Take(3).ToList();
+
+                // 4. 파일 내용 재구성 (상단 3줄은 새 이력, 4줄부터는 기존 내용 유지)
+                List<string> newConfig = new List<string>();
+                for (int i = 0; i < 3; i++)
+                {
+                    newConfig.Add(i < ipPairs.Count ? ipPairs[i] : "EMPTY|EMPTY");
+                }
+
+                // 5. 4번째 줄(인덱스 3)부터의 기존 설정이 있다면 그대로 붙임
+                if (allLines.Count > 3)
+                {
+                    newConfig.AddRange(allLines.Skip(3));
+                }
+
+                File.WriteAllLines(_configPath, newConfig);
+                UpdateLog($"✅ 접속 성공: IP 이력 자동 업데이트 완료 ({currentPair})");
+            }
+            catch (Exception ex) { UpdateLog($"❌ IP 자동 저장 실패: {ex.Message}"); }
+        }
+
+        private void UpdateOverlayRects()
+        {
+            if (_overlay == null || _overlay.IsDisposed) return;
+
+            _overlay.RectsToDraw.Clear();
+
+            // 1. Down 버튼 (중심점 보정 계산)
+            if (_btnDown.Image != null)
+            {
+                int w = _btnDown.Image.Width;
+                int h = _btnDown.Image.Height;
+                // 좌표에서 크기의 절반을 빼서 좌상단 시작점을 찾음
+                _overlay.RectsToDraw.Add(new OverlayItem
+                {
+                    Rect = new Rectangle(_btnDown.Pos.X - (w / 2), _btnDown.Pos.Y - (h / 2), w, h),
+                    Label = "Down"
+                });
+            }
+
+            // 2. Confirm 버튼
+            if (_btnConfirm.Image != null)
+            {
+                int w = _btnConfirm.Image.Width;
+                int h = _btnConfirm.Image.Height;
+                _overlay.RectsToDraw.Add(new OverlayItem
+                {
+                    Rect = new Rectangle(_btnConfirm.Pos.X - (w / 2), _btnConfirm.Pos.Y - (h / 2), w, h),
+                    Label = "Confirm"
+                });
+            }
+
+            // 3. Up 버튼
+            if (_btnUp.Image != null)
+            {
+                int w = _btnUp.Image.Width;
+                int h = _btnUp.Image.Height;
+                _overlay.RectsToDraw.Add(new OverlayItem
+                {
+                    Rect = new Rectangle(_btnUp.Pos.X - (w / 2), _btnUp.Pos.Y - (h / 2), w, h),
+                    Label = "Up"
+                });
+            }
+
+            _overlay.Invalidate();
+        }
+        private void chkShowOverlay_CheckedChanged(object sender, EventArgs e)
+        {
+            if (chkShowOverlay.Checked)
+            {
+                if (_overlay == null || _overlay.IsDisposed)
+                {
+                    _overlay = new OverlayForm();
+                }
+
+                UpdateOverlayRects(); // 사각형 목록을 최신화하고 그리기
+                _overlay.Show();
+            }
+            else
+            {
+                _overlay?.Hide();
+            }
+        }
+
+        // 마우스 다운: 드래그 시작
+        private void OnMouseDown(object sender, MouseEventArgs e)
+        {
+            if (chkCaptureEnable.Checked && e.Button == MouseButtons.Left)
+            {
+                _dragStart = e.Location;
+                _isDragging = true;
+            }
+        }
+
+        // 마우스 무브: 드래그 영역 계산 및 오버레이 갱신
+        private void OnMouseMove(object sender, MouseEventArgs e)
+        {
+            if (_isDragging)
+            {
+                _dragRect = new Rectangle(
+                    Math.Min(_dragStart.X, e.X), Math.Min(_dragStart.Y, e.Y),
+                    Math.Abs(_dragStart.X - e.X), Math.Abs(_dragStart.Y - e.Y)
+                );
+                // 오버레이 창에 현재 드래그 중인 영역 표시 요청
+                _overlay.CurrentDragRect = _dragRect;
+                _overlay.Invalidate();
+            }
+        }
+
+        // 마우스 업: 드래그 종료 및 해당 영역 캡처
+        private async void OnMouseUp(object sender, MouseEventArgs e)
+        {
+            if (_isDragging)
+            {
+                _isDragging = false;
+                if (_dragRect.Width > 5 && _dragRect.Height > 5)
+                {
+                    Bitmap capturedBmp = CaptureRectImage(_dragRect);
+                    await ProcessCapturedItem(capturedBmp, _dragRect); // 순차 저장 로직
+                }
+                _overlay.CurrentDragRect = Rectangle.Empty;
+                _overlay.Invalidate();
+            }
+        }
+        private Bitmap CaptureRectImage(Rectangle rect)
+        {
+            // 화면 크기만큼의 도화지를 준비합니다.
+            Bitmap bmp = new Bitmap(rect.Width, rect.Height);
+            using (Graphics g = Graphics.FromImage(bmp))
+            {
+                // 화면(Screen)에서 rect 영역만 복사해서 도화지에 그립니다.
+                g.CopyFromScreen(rect.Left, rect.Top, 0, 0, rect.Size);
+            }
+            return bmp;
+        }
+        private async Task ProcessCapturedItem(Bitmap capturedBmp, Rectangle rect)
+        {
+            string fileName = "";
+            string dateStr = DateTime.Now.ToString("yyyyMMdd");
+            string buildVer = "v1.4.0"; // 사용자님의 버전 규칙 적용
+
+            switch (_captureIndex)
+            {
+                case 0: // ⚓ Anchor
+                    _anchorImage = (Bitmap)capturedBmp.Clone();
+                    _overlay.AnchorImage = _anchorImage;
+                    _overlay.AnchorPos = rect.Location;
+                    fileName = $"Anchor_{dateStr}_{buildVer}.png";
+                    UpdateLog("⚓ 앵커 수집 완료 (가이드 활성화)");
+                    break;
+                case 1: // ⬇️ Down
+                    _btnDown = new CargoButton { Pos = GetCenter(rect), Image = capturedBmp, Name = "Down" };
+                    picDown.Image = (Bitmap)capturedBmp.Clone();
+                    fileName = $"Down_{dateStr}_{buildVer}.png";
+                    break;
+                case 2: // ✅ Confirm
+                    _btnConfirm = new CargoButton { Pos = GetCenter(rect), Image = capturedBmp, Name = "Confirm" };
+                    picConfirm.Image = (Bitmap)capturedBmp.Clone();
+                    fileName = $"Confirm_{dateStr}_{buildVer}.png";
+                    break;
+                case 3: // ⬆️ Up
+                    _btnUp = new CargoButton { Pos = GetCenter(rect), Image = capturedBmp, Name = "Up" };
+                    picUp.Image = (Bitmap)capturedBmp.Clone();
+                    fileName = $"Up_{dateStr}_{buildVer}.png";
+                    break;
+            }
+
+            // PNG로 저장
+            if (!string.IsNullOrEmpty(fileName))
+                capturedBmp.Save(Path.Combine(Application.StartupPath, fileName), System.Drawing.Imaging.ImageFormat.Png);
+
+            _captureIndex = (_captureIndex + 1) % 4; // 0,1,2,3 순환
+            UpdateOverlayRects();
+        }
+        // 사각형의 중앙 좌표를 구해주는 간단한 함수
+        private Point GetCenter(Rectangle r) => new Point(r.X + r.Width / 2, r.Y + r.Height / 2);
+        private Rectangle GetRect(Point p1, Point p2) => new Rectangle(
+            Math.Min(p1.X, p2.X), Math.Min(p1.Y, p2.Y),
+            Math.Abs(p1.X - p2.X), Math.Abs(p1.Y - p2.Y));
+        private void btnSaveConfig_Click(object sender, EventArgs e) => SaveSettings();
+
+        #endregion
+
+       
+    }
+    
+}
