@@ -1,4 +1,4 @@
-namespace SC_StepByStep_v1
+namespace STARCITIZEN_OpenCV
 {
     partial class Form1
     {
@@ -44,6 +44,10 @@ namespace SC_StepByStep_v1
             label3 = new Label();
             txtMyIP = new Label();
             tabPage2 = new TabPage();
+            txtCaptureKey = new TextBox();
+            txtOpacity = new TextBox();
+            picAnchor = new PictureBox();
+            chkShowOverlay = new CheckBox();
             chkSubManual = new CheckBox();
             txtSyncDist = new TextBox();
             chkSyncCagoLV = new CheckBox();
@@ -77,9 +81,12 @@ namespace SC_StepByStep_v1
             chkAlwaysOnTop = new CheckBox();
             chkSoundEnable = new CheckBox();
             chkAntiKick = new CheckBox();
+            lblAiDetection = new Label();
+            lblAiStatus = new Label();
             tabControl1.SuspendLayout();
             tabPage1.SuspendLayout();
             tabPage2.SuspendLayout();
+            ((System.ComponentModel.ISupportInitialize)picAnchor).BeginInit();
             ((System.ComponentModel.ISupportInitialize)picUp).BeginInit();
             ((System.ComponentModel.ISupportInitialize)picConfirm).BeginInit();
             ((System.ComponentModel.ISupportInitialize)picDown).BeginInit();
@@ -90,7 +97,7 @@ namespace SC_StepByStep_v1
             // 
             lstLog.Font = new Font("맑은 고딕", 8F, FontStyle.Regular, GraphicsUnit.Point, 129);
             lstLog.FormattingEnabled = true;
-            lstLog.Location = new Point(9, 244);
+            lstLog.Location = new Point(10, 261);
             lstLog.Name = "lstLog";
             lstLog.Size = new Size(253, 160);
             lstLog.TabIndex = 0;
@@ -234,6 +241,10 @@ namespace SC_StepByStep_v1
             // 
             // tabPage2
             // 
+            tabPage2.Controls.Add(txtCaptureKey);
+            tabPage2.Controls.Add(txtOpacity);
+            tabPage2.Controls.Add(picAnchor);
+            tabPage2.Controls.Add(chkShowOverlay);
             tabPage2.Controls.Add(chkSubManual);
             tabPage2.Controls.Add(txtSyncDist);
             tabPage2.Controls.Add(chkSyncCagoLV);
@@ -260,20 +271,59 @@ namespace SC_StepByStep_v1
             tabPage2.Text = "CagoWork";
             tabPage2.UseVisualStyleBackColor = true;
             // 
+            // txtCaptureKey
+            // 
+            txtCaptureKey.Location = new Point(189, 121);
+            txtCaptureKey.Name = "txtCaptureKey";
+            txtCaptureKey.ReadOnly = true;
+            txtCaptureKey.Size = new Size(64, 23);
+            txtCaptureKey.TabIndex = 30;
+            txtCaptureKey.MouseDown += txtCaptureKey_MouseDown;
+            // 
+            // txtOpacity
+            // 
+            txtOpacity.Location = new Point(220, 80);
+            txtOpacity.MaxLength = 3;
+            txtOpacity.Name = "txtOpacity";
+            txtOpacity.Size = new Size(29, 23);
+            txtOpacity.TabIndex = 29;
+            txtOpacity.Text = "40";
+            txtOpacity.TextChanged += txtOpacity_TextChanged;
+            // 
+            // picAnchor
+            // 
+            picAnchor.Location = new Point(18, 10);
+            picAnchor.Name = "picAnchor";
+            picAnchor.Size = new Size(55, 49);
+            picAnchor.SizeMode = PictureBoxSizeMode.Zoom;
+            picAnchor.TabIndex = 28;
+            picAnchor.TabStop = false;
+            // 
+            // chkShowOverlay
+            // 
+            chkShowOverlay.AutoSize = true;
+            chkShowOverlay.Location = new Point(157, 63);
+            chkShowOverlay.Name = "chkShowOverlay";
+            chkShowOverlay.Size = new Size(96, 19);
+            chkShowOverlay.TabIndex = 26;
+            chkShowOverlay.Text = "ShowOverlay";
+            chkShowOverlay.UseVisualStyleBackColor = true;
+            chkShowOverlay.CheckedChanged += chkShowOverlay_CheckedChanged;
+            // 
             // chkSubManual
             // 
             chkSubManual.AutoSize = true;
             chkSubManual.Font = new Font("맑은 고딕", 8.25F, FontStyle.Regular, GraphicsUnit.Point, 129);
-            chkSubManual.Location = new Point(129, 65);
+            chkSubManual.Location = new Point(88, 65);
             chkSubManual.Name = "chkSubManual";
-            chkSubManual.Size = new Size(117, 17);
+            chkSubManual.Size = new Size(63, 17);
             chkSubManual.TabIndex = 25;
-            chkSubManual.Text = "Sub Manual MOD";
+            chkSubManual.Text = "Manual";
             chkSubManual.UseVisualStyleBackColor = true;
             // 
             // txtSyncDist
             // 
-            txtSyncDist.Location = new Point(220, 81);
+            txtSyncDist.Location = new Point(220, 102);
             txtSyncDist.Name = "txtSyncDist";
             txtSyncDist.Size = new Size(29, 23);
             txtSyncDist.TabIndex = 24;
@@ -283,7 +333,7 @@ namespace SC_StepByStep_v1
             // 
             chkSyncCagoLV.AutoSize = true;
             chkSyncCagoLV.Font = new Font("맑은 고딕", 8.25F, FontStyle.Regular, GraphicsUnit.Point, 129);
-            chkSyncCagoLV.Location = new Point(131, 84);
+            chkSyncCagoLV.Location = new Point(131, 105);
             chkSyncCagoLV.Name = "chkSyncCagoLV";
             chkSyncCagoLV.Size = new Size(87, 17);
             chkSyncCagoLV.TabIndex = 23;
@@ -293,7 +343,7 @@ namespace SC_StepByStep_v1
             // label16
             // 
             label16.AutoSize = true;
-            label16.Location = new Point(182, 47);
+            label16.Location = new Point(205, 47);
             label16.Name = "label16";
             label16.Size = new Size(40, 15);
             label16.TabIndex = 22;
@@ -311,7 +361,7 @@ namespace SC_StepByStep_v1
             // label15
             // 
             label15.AutoSize = true;
-            label15.Location = new Point(93, 47);
+            label15.Location = new Point(138, 47);
             label15.Name = "label15";
             label15.Size = new Size(69, 15);
             label15.TabIndex = 21;
@@ -329,7 +379,7 @@ namespace SC_StepByStep_v1
             // label14
             // 
             label14.AutoSize = true;
-            label14.Location = new Point(22, 47);
+            label14.Location = new Point(82, 47);
             label14.Name = "label14";
             label14.Size = new Size(57, 15);
             label14.TabIndex = 17;
@@ -374,10 +424,10 @@ namespace SC_StepByStep_v1
             // picUp
             // 
             picUp.BorderStyle = BorderStyle.FixedSingle;
-            picUp.Location = new Point(186, 14);
+            picUp.Location = new Point(202, 9);
             picUp.Name = "picUp";
-            picUp.Size = new Size(34, 30);
-            picUp.SizeMode = PictureBoxSizeMode.StretchImage;
+            picUp.Size = new Size(40, 35);
+            picUp.SizeMode = PictureBoxSizeMode.Zoom;
             picUp.TabIndex = 12;
             picUp.TabStop = false;
             // 
@@ -400,20 +450,20 @@ namespace SC_StepByStep_v1
             // picConfirm
             // 
             picConfirm.BorderStyle = BorderStyle.FixedSingle;
-            picConfirm.Location = new Point(110, 14);
+            picConfirm.Location = new Point(147, 9);
             picConfirm.Name = "picConfirm";
-            picConfirm.Size = new Size(34, 30);
-            picConfirm.SizeMode = PictureBoxSizeMode.StretchImage;
+            picConfirm.Size = new Size(40, 35);
+            picConfirm.SizeMode = PictureBoxSizeMode.Zoom;
             picConfirm.TabIndex = 11;
             picConfirm.TabStop = false;
             // 
             // picDown
             // 
             picDown.BorderStyle = BorderStyle.FixedSingle;
-            picDown.Location = new Point(34, 14);
+            picDown.Location = new Point(87, 9);
             picDown.Name = "picDown";
-            picDown.Size = new Size(34, 30);
-            picDown.SizeMode = PictureBoxSizeMode.StretchImage;
+            picDown.Size = new Size(40, 35);
+            picDown.SizeMode = PictureBoxSizeMode.Zoom;
             picDown.TabIndex = 10;
             picDown.TabStop = false;
             // 
@@ -575,11 +625,33 @@ namespace SC_StepByStep_v1
             chkAntiKick.Text = "AntiKick";
             chkAntiKick.UseVisualStyleBackColor = true;
             // 
+            // lblAiDetection
+            // 
+            lblAiDetection.AutoSize = true;
+            lblAiDetection.Location = new Point(184, 235);
+            lblAiDetection.Name = "lblAiDetection";
+            lblAiDetection.Size = new Size(78, 15);
+            lblAiDetection.TabIndex = 21;
+            lblAiDetection.Text = "AI: STANDBY";
+            // 
+            // lblAiStatus
+            // 
+            lblAiStatus.AutoSize = true;
+            lblAiStatus.BackColor = Color.Black;
+            lblAiStatus.ForeColor = Color.Cyan;
+            lblAiStatus.Location = new Point(10, 235);
+            lblAiStatus.Name = "lblAiStatus";
+            lblAiStatus.Size = new Size(99, 15);
+            lblAiStatus.TabIndex = 22;
+            lblAiStatus.Text = "AI: ANALYZING...";
+            // 
             // Form1
             // 
             AutoScaleDimensions = new SizeF(7F, 15F);
             AutoScaleMode = AutoScaleMode.Font;
-            ClientSize = new Size(270, 416);
+            ClientSize = new Size(275, 425);
+            Controls.Add(lblAiStatus);
+            Controls.Add(lblAiDetection);
             Controls.Add(chkAntiKick);
             Controls.Add(lblStatus);
             Controls.Add(tabControl1);
@@ -594,6 +666,7 @@ namespace SC_StepByStep_v1
             tabPage1.PerformLayout();
             tabPage2.ResumeLayout(false);
             tabPage2.PerformLayout();
+            ((System.ComponentModel.ISupportInitialize)picAnchor).EndInit();
             ((System.ComponentModel.ISupportInitialize)picUp).EndInit();
             ((System.ComponentModel.ISupportInitialize)picConfirm).EndInit();
             ((System.ComponentModel.ISupportInitialize)picDown).EndInit();
@@ -654,5 +727,11 @@ namespace SC_StepByStep_v1
         private CheckBox chkSyncCagoLV;
         private CheckBox chkSubManual;
         private Label lblRole;
+        private CheckBox chkShowOverlay;
+        private PictureBox picAnchor;
+        private TextBox txtOpacity;
+        private TextBox txtCaptureKey;
+        private Label lblAiDetection;
+        private Label lblAiStatus;
     }
 }
