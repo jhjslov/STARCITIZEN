@@ -1,0 +1,62 @@
+using OpenCvSharp;
+using System;
+using System.Linq;
+
+namespace STARCITIZEN_OpenCV // 사용자님의 프로젝트 네임스페이스와 맞추세요
+{
+    public class OrbTracker : IDisposable
+    {
+        private ORB _orb;
+        private BFMatcher _matcher;
+        private Mat _refDescriptors = new Mat();
+        private KeyPoint[] _refKeyPoints;
+
+        public OrbTracker()
+        {
+            _orb = ORB.Create(nFeatures: 1000);
+            _matcher = new BFMatcher(NormTypes.Hamming, crossCheck: true);
+        }
+
+        public void LearnMarker(Mat markerMat)
+        {
+            if (markerMat == null || markerMat.Empty()) return;
+            _refDescriptors.Dispose();
+            _refDescriptors = new Mat();
+            _orb.DetectAndCompute(markerMat, null, out _refKeyPoints, _refDescriptors);
+        }
+
+        public System.Drawing.Point? FindTarget(Mat sceneMat)
+        {
+            if (_refDescriptors.Empty() || sceneMat == null || sceneMat.Empty()) return null;
+
+            using (Mat sceneDescriptors = new Mat())
+            {
+                KeyPoint[] sceneKeyPoints;
+                _orb.DetectAndCompute(sceneMat, null, out sceneKeyPoints, sceneDescriptors);
+                if (sceneDescriptors.Empty()) return null;
+
+                DMatch[] matches = _matcher.Match(_refDescriptors, sceneDescriptors);
+                var goodMatches = matches.OrderBy(x => x.Distance).Take(50).ToList();
+
+                if (goodMatches.Count > 10)
+                {
+                    float sumX = 0, sumY = 0;
+                    foreach (var match in goodMatches)
+                    {
+                        sumX += sceneKeyPoints[match.TrainIdx].Pt.X;
+                        sumY += sceneKeyPoints[match.TrainIdx].Pt.Y;
+                    }
+                    return new System.Drawing.Point((int)(sumX / goodMatches.Count), (int)(sumY / goodMatches.Count));
+                }
+            }
+            return null;
+        }
+
+        public void Dispose()
+        {
+            _orb?.Dispose();
+            _matcher?.Dispose();
+            _refDescriptors?.Dispose();
+        }
+    }
+}
